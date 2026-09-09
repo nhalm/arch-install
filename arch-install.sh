@@ -4,9 +4,9 @@
 # mounted through the btrfs default subvolume, so `snapper rollback` restores
 # kernel and initramfs along with the OS.
 # Env: DISK (required) TARGET_HOSTNAME USERNAME TZ LOCALE KEYMAP UCODE
-#      EXTRA_PACKAGES CONFIRM=yes LUKS_PASSPHRASE USER_PASSWORD ROOT_PASSWORD
+#      EXTRA_PACKAGES CONFIRM LUKS_PASSPHRASE USER_PASSWORD ROOT_PASSWORD
 #      LUKS_PBKDF_MEMORY
-# Usage: DISK=/dev/vda CONFIRM=yes ./arch-install-v2.sh [install|verify]
+# Usage: DISK=/dev/vda ./arch-install.sh [install|verify]   (CONFIRM=yes to skip the prompt)
 set -euo pipefail
 
 if [[ ${HOSTNAME:-} == "$(uname -n)" ]]; then unset HOSTNAME; fi
@@ -18,7 +18,7 @@ LOCALE="${LOCALE:-en_US.UTF-8}"
 KEYMAP="${KEYMAP:-us}"
 UCODE="${UCODE:-intel-ucode}"
 EXTRA_PACKAGES="${EXTRA_PACKAGES-git}"
-CONFIRM="${CONFIRM:-no}"
+CONFIRM="${CONFIRM:-no}"   # yes = skip the prompt
 LUKS_PBKDF_MEMORY="${LUKS_PBKDF_MEMORY-524288}"
 MODE="${1:-install}"
 
@@ -117,7 +117,14 @@ banner() {
   layout: GRUB cryptodisk, /boot inside the root subvolume, root via default subvolume
 
 EOF
-  [[ $CONFIRM == yes ]] || die "refusing without CONFIRM=yes in the environment"
+  [[ $CONFIRM == yes ]] && return 0
+  [[ -e /dev/tty ]] || die "not a terminal and CONFIRM=yes not set"
+  local reply
+  read -r -p "  Erase $DISK and install? [y/N] " reply </dev/tty
+  case $reply in
+  [yY] | [yY][eE][sS]) ;;
+  *) die "aborted" ;;
+  esac
 }
 
 partition() {

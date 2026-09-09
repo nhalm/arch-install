@@ -61,10 +61,11 @@ Expect `nvme0n1`, ~953G.
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/nhalm/arch-install/main/arch-install.sh
 chmod +x arch-install.sh
-DISK=/dev/nvme0n1 CONFIRM=yes ./arch-install.sh
+DISK=/dev/nvme0n1 ./arch-install.sh
 ```
 
-It prints what it will destroy, then asks for the LUKS passphrase twice. One
+It prints what it will destroy and asks `[y/N]`, then asks for the LUKS
+passphrase twice. One
 yay-style PKGBUILD prompt does not appear here — this stage is pacman only.
 Takes roughly 5-15 minutes depending on mirrors. Ends with:
 
@@ -133,7 +134,7 @@ btrfs subvolume get-default /
 | Variable | Default |
 |---|---|
 | `DISK` | required |
-| `CONFIRM` | `no` — must be `yes` |
+| `CONFIRM` | prompts; `yes` skips the prompt |
 | `TARGET_HOSTNAME` | `asus` |
 | `USERNAME` | `nick` |
 | `TZ` | `US/Central` |
