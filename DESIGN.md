@@ -16,6 +16,14 @@ Change any of these and rollback silently stops working.
 | LUKS keyfile in the initramfs | Without it GRUB and the initramfs each prompt. Keyfile is mode 000 inside the encrypted volume; a broken keyfile degrades to a second prompt, not an unbootable system. |
 | `--ambit=classic` on the first rollback | `idToNum()` requires a path ending `/<N>/snapshot`; `@` is not one. Later rollbacks do not need it. |
 
+## Re-applying
+
+`snapper_setup()` runs everything through `target()`, which executes directly
+when `MNT` is empty — and `MNT=/` collapses to empty. `./arch-install.sh snapper`
+therefore re-applies the whole snapper configuration to a running system, so the
+script stays the single source of truth for retention instead of only describing
+the state at install time. `create-config` is skipped when the config exists.
+
 ## Cost
 
 GRUB runs argon2id single-threaded in EFI: **~10 s of silent decrypt at every boot**,

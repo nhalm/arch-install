@@ -133,7 +133,7 @@ btrfs subvolume get-default /
 
 | Variable | Default |
 |---|---|
-| `DISK` | required |
+| `DISK` | required, except in `snapper` mode |
 | `CONFIRM` | prompts; `yes` skips the prompt |
 | `TARGET_HOSTNAME` | `asus` |
 | `USERNAME` | `nick` |
@@ -177,6 +177,19 @@ what you are running now. Always pass the number.
 ```bash
 DISK=/dev/nvme0n1 MNT=/ ./arch-install.sh verify
 ```
+
+## Change snapper retention
+
+Edit the `set-config` values in `snapper_setup()`, then re-apply in place:
+
+```bash
+sudo MNT=/ ./arch-install.sh snapper
+sudo snapper --no-dbus -c root get-config
+```
+
+Idempotent, needs no `DISK`, destroys nothing. `verify` pins the same values, so
+change both. `--no-dbus` on the read matters: a running `snapperd` serves the
+config it cached at startup and can report the old values.
 
 ## Test
 
