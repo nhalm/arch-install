@@ -9,6 +9,7 @@ Change any of these and rollback silently stops working.
 | Mount by `subvol=`, never `subvolid=`, for non-root | Rollback creates a new subvolume with a new ID. A numeric ID then names the old root. |
 | GRUB, not systemd-boot | systemd-boot cannot read btrfs — the Boot Loader Specification requires the ESP be firmware-readable (FAT), so a kernel there can never be in a snapshot. |
 | `/usr/lib/snapper/plugins/10-grub` + `grub-boot-sync.service` | Arch's GRUB has no btrfs subvolume support: `grub-core/fs/btrfs.c` resolves from subvolid 5. openSUSE's `btrfs_relative_path` is a SUSE patch that never merged. These re-point the embedded prefix after a rollback. |
+| The prefix is read back out of `grubx64.efi`/`BOOTX64.EFI`, not from the ESP stamp | `/efi/EFI/GRUB/root-subvol` is written by `grub-sync` itself, so it cannot detect a hand-run `grub-install`. GRUB boots from the prefix compiled into the core image; once the subvolume that prefix names is deleted the next boot is `grub rescue>`, with nothing left running to notice. `--if-changed` re-syncs on a stale or missing prefix, and `verify` fails on one. |
 | `/var/lib/pacman` stays inside `@` | Excluding it leaves the package DB claiming versions the files on disk do not match. |
 | `NUMBER_LIMIT` is a range (`10-20`) | A scalar is a degenerate range and silently disables `FREE_LIMIT`. |
 | btrfs quotas OFF | `FREE_LIMIT` needs only `statvfs`. snapper 0.13.1 forces a full `quota_rescan` on every cleanup when quotas are on. |

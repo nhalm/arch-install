@@ -1,7 +1,9 @@
 # RECOVERY.md — bringing an `arch-install.sh` (v2) system back from the dead
 
 Every command below was executed in the `~/vm/v2` VM against a real install of
-`~/personal/arch-install/arch-install.sh` (md5 `7587edfb40ce258f605fdfbd6d72d687`),
+`~/personal/arch-install/arch-install.sh` — §1–§11 against md5
+`7587edfb40ce258f605fdfbd6d72d687`, §12 against `10d028005422f99d5cd2cd8bae448246`,
+which adds the prefix checks §9 asked for —
 Arch ISO `archlinux-2026.09.01-x86_64.iso`, grub 2:2.14-1, snapper 0.13.1-3,
 linux 7.2.4-arch1-2. Four failure modes were induced, each confirmed
 **not to boot** (or to boot **wrong**), then recovered. Nothing here is
@@ -582,7 +584,8 @@ grep -c rootflags=subvol= /boot/grub/grub.cfg     # 3   -- must be 0
 ```
 
 The path in `get-default` and the bracketed subvolume in `findmnt` must be the
-same. Or just run `arch-install.sh verify`, which checks both (§8).
+same. Or just run `arch-install.sh verify`, which checks both — executed
+against this exact broken state in §12.
 
 ### Recovery (executed)
 
@@ -680,23 +683,22 @@ cat /efi/EFI/GRUB/root-subvol                # @/.snapshots/11/snapshot
 btrfs subvolume get-default / | awk '{print $NF}'   # @/.snapshots/14/snapshot
 ```
 
-### `verify` would have caught both silent states — but it trusts the stamp file
+### `verify` catches both silent states — CONFIRMED BY EXECUTION
 
-Reading `arch-install.sh` (not executed against a broken system — `verify` was
-only ever run here on the *repaired* one):
+The claim above was originally read out of the source. It has since been
+executed against a live, broken system (see §12).
 
-* `checkv "root mounted on the default subvolume"` (line 549) compares
-  `findmnt -no SOURCE /` with the default subvolume. That is precisely the §6
-  mismatch, so `verify` fails on it.
-* `grep -q 'rootflags=subvol=' "$cfg"` (line 570) fails on §6's `grub.cfg`.
-* `checkv "grub prefix stamp" "$dflt" "$got"` (line 583) compares
-  `/efi/EFI/GRUB/root-subvol` with the default — the §3 stale-anchor state.
+* `checkv "root mounted on the default subvolume"` compares `findmnt -no SOURCE /`
+  with the default subvolume — the §6 mismatch.
+* `grep -q 'rootflags=subvol=' "$cfg"` — §6's `grub.cfg`.
+* `checkv "grub prefix stamp" "$dflt" "$got"` compares `/efi/EFI/GRUB/root-subvol`
+  with the default — the §3 stale-anchor state.
 
-What it does **not** do is read the prefix actually embedded in
-`grubx64.efi`, or check that the subvolume that prefix names still exists. It
-takes the stamp file's word for it. In every case here `grub-sync` wrote both
-together, so the two agreed; a hand-run `grub-install` would desynchronise them
-silently.
+The stamp check alone was not enough, because `grub-sync` writes that file
+itself. `verify` now also reads the prefix **embedded in the core images** —
+`/efi/EFI/GRUB/grubx64.efi` and `/efi/EFI/BOOT/BOOTX64.EFI` — and requires both
+to name the default subvolume and that subvolume to exist. A hand-run
+`grub-install` desynchronises stamp from prefix, and only the new check sees it.
 
 ---
 
@@ -714,19 +716,9 @@ silently.
    ID and the kernel version next to it would let a rescuer choose a target and
    sanity-check module/kernel agreement without mounting the btrfs at all.
 
-3. **Have `verify` read the real prefix, not just the stamp.** It already
-   compares `/efi/EFI/GRUB/root-subvol` to the default (line 583), but that file
-   is written by `grub-sync` itself. One more check —
-   `strings /efi/EFI/GRUB/grubx64.efi | grep -oE 'snapshots/[0-9]+/snapshot/boot/grub'`
-   naming the same subvolume, and that subvolume still existing — would close
-   the gap between what GRUB was told and what GRUB will do.
+3. **DONE — `verify` reads the real prefix, not just the stamp.** See §12.
 
-4. **Have `grub-sync --if-changed` also fire on a dangling prefix.** Today it
-   compares the stamp against the default and checks `grub.cfg` for
-   `rootflags=`. It does not notice that the subvolume named by the *core
-   image's* prefix has been deleted — the §3 failure. Since the service already
-   runs at every boot, the check is nearly free and would have repaired §3
-   before the reboot that broke it.
+4. **DONE — `grub-sync --if-changed` fires on a stale or dangling prefix.** See §12.
 
 5. **Consider a second GRUB entry pinned to `--removable`'s own prefix, or a
    menu entry per snapshot.** In §4 no menu entry could boot, yet three sibling
@@ -774,4 +766,165 @@ here.
 | `break3.sh`, `rescue1.sh`, `rescue3.sh`, `rescue4b.sh`, `rescue-extras.sh` | the scenario scripts, each printing every command it runs |
 
 qcow2 checkpoints: `good-postfullproof4`, `good-after-scenario2`,
-`good-after-all-recoveries` (`qemu-img snapshot -l test.qcow2`).
+`good-after-all-recoveries` — that disk is now `keep-recovered.qcow2`, since §12
+reinstalled `test.qcow2` from blank. `test.qcow2` carries `green-newinstaller`
+(`qemu-img snapshot -l` reports nothing while qemu holds the image).
+
+---
+
+## 12. The prefix checks — REPRODUCED, DETECTED, SELF-REPAIRED
+
+Three changes landed in `arch-install.sh` after §9. Everything below was executed
+against a **fresh install from a blank disk** by the changed installer (md5
+`10d028005422f99d5cd2cd8bae448246`), after the full clean cycle passed, on the
+`~/vm/v2` harness. The default subvolume there is `@/.snapshots/8/snapshot`.
+
+### What the core image actually holds
+
+One string, the same in both core images:
+
+```sh
+grep -aoE '[)]/[^)]*/boot/grub' /efi/EFI/GRUB/grubx64.efi
+# )/@/.snapshots/8/snapshot/boot/grub
+grep -aoE '[)]/[^)]*/boot/grub' /efi/EFI/BOOT/BOOTX64.EFI
+# )/@/.snapshots/8/snapshot/boot/grub
+```
+
+The full string is `(cryptouuid/<luks-uuid>)/@/.snapshots/8/snapshot/boot/grub`.
+`grep -a` reads it straight out of the binary — no `binutils`, no `strings`, so
+the check works on a base install.
+
+### Break: a hand-run `grub-install` desynchronises the stamp from the prefix
+
+`grub-install` cannot target a snapper snapshot directly — they are read-only
+(`cannot backup .../acpi.mod: Read-only file system`). Make a writable subvolume
+of the same path shape and point GRUB at it, leaving the stamp alone:
+
+```sh
+mkdir -p /.snapshots/99
+btrfs subvolume snapshot / /.snapshots/99/snapshot
+grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB \
+  --boot-directory=/.snapshots/99/snapshot/boot
+grub-install --target=x86_64-efi --efi-directory=/efi --removable \
+  --boot-directory=/.snapshots/99/snapshot/boot
+```
+
+```
+### stamp still says @/.snapshots/8/snapshot; prefixes say:
+/efi/EFI/GRUB/grubx64.efi )/@/.snapshots/99/snapshot/boot/grub
+/efi/EFI/BOOT/BOOTX64.EFI )/@/.snapshots/99/snapshot/boot/grub
+```
+
+`verify` catches it. The stamp check stays silent the whole time — it is
+checking the file `grub-sync` wrote, not the binary GRUB will run:
+
+```
+==> VERIFY FAIL: grub prefix in EFI/GRUB/grubx64.efi (want '@/.snapshots/8/snapshot', got '@/.snapshots/99/snapshot')
+==> VERIFY FAIL: grub prefix in EFI/BOOT/BOOTX64.EFI (want '@/.snapshots/8/snapshot', got '@/.snapshots/99/snapshot')
+```
+
+### Break: the prefix subvolume is deleted — §3, one reboot early
+
+```sh
+btrfs subvolume delete /.snapshots/99/snapshot
+```
+
+At this instant `stamp == default` and `grub.cfg` has no `rootflags=`, so the
+**old** `--if-changed` had nothing to react to and exited 0. The machine was one
+reboot from §3's `grub rescue>`. The shipped helper now says so and repairs it:
+
+```
+### the shipped grub-sync --if-changed on the DANGLING prefix
+/efi/EFI/GRUB/grubx64.efi: prefix @/.snapshots/99/snapshot names a deleted subvolume
+/efi/EFI/BOOT/BOOTX64.EFI: prefix @/.snapshots/99/snapshot names a deleted subvolume
+Installing for x86_64-efi platform.
+Installation finished. No error reported.
+...
+### prefixes after the self-repair
+/efi/EFI/GRUB/grubx64.efi )/@/.snapshots/8/snapshot/boot/grub
+/efi/EFI/BOOT/BOOTX64.EFI )/@/.snapshots/8/snapshot/boot/grub
+==> verify: all invariants hold
+```
+
+### The boot-time net, end to end
+
+A prefix that is *already* dangling at power-on is beyond anything running on
+the system. What the check removes is the **window** §8 describes: the days
+between the prefix going stale and `snapper cleanup` deleting what it names.
+Armed with the safety nets **enabled** — unlike §3, which had to disable them:
+
+```
+### armed: default=@/.snapshots/8/snapshot stamp=@/.snapshots/8/snapshot prefix=)/@/.snapshots/99/snapshot/boot/grub
+enabled
+-rwxr-xr-x 1 root root 246 Sep  9 15:26 /usr/lib/snapper/plugins/10-grub
+```
+
+Reboot: the machine comes up on the stale-but-valid prefix, and the service
+repairs it unprompted.
+
+```
+Sep 09 15:33:28 archvm grub-sync[1673]: /efi/EFI/GRUB/grubx64.efi: prefix @/.snapshots/99/snapshot is stale, default is @/.snapshots/8/snapshot
+Sep 09 15:33:28 archvm grub-sync[1673]: /efi/EFI/BOOT/BOOTX64.EFI: prefix @/.snapshots/99/snapshot is stale, default is @/.snapshots/8/snapshot
+Sep 09 15:33:31 archvm systemd[1]: Finished Point GRUB at the current btrfs default subvolume.
+
+### prefixes now
+/efi/EFI/GRUB/grubx64.efi )/@/.snapshots/8/snapshot/boot/grub
+/efi/EFI/BOOT/BOOTX64.EFI )/@/.snapshots/8/snapshot/boot/grub
+```
+
+Then `btrfs subvolume delete /.snapshots/99/snapshot` — the step that produced
+`grub rescue>` in §3 — and reboot again:
+
+```
+OUTCOME=BOOTED
+```
+
+The old check could not have done this: the stamp equalled the default
+throughout.
+
+### `verify` on the `rootflags=subvol=` states, executed
+
+§8 claimed this from source; `verify` had only ever run on a repaired system.
+Executed. First the break alone, no rollback:
+
+```sh
+grub-mkconfig -o /boot/grub/grub.cfg
+grep -c rootflags=subvol= /boot/grub/grub.cfg   # 3
+DISK=/dev/vda MNT=/ bash arch-install.sh verify
+```
+```
+==> VERIFY FAIL: grub.cfg has rootflags=subvol=
+==> ERROR: verify failed: grub.cfg has rootflags=subvol=
+```
+
+Then the full §6 silent state — nets disabled and snapshotted, rollback, reboot,
+so the machine is running a subvolume that is not the default and cannot tell:
+
+```
+ID 276 gen 66 top level 262 path @/.snapshots/11/snapshot
+/dev/mapper/root[/@/.snapshots/8/snapshot]
+3
+BOOT_IMAGE=/@/.snapshots/8/snapshot/boot/vmlinuz-linux ... rootflags=subvol=@/.snapshots/8/snapshot ...
+MARK-PRE-ROLLBACK-ROOT
+```
+```
+==> VERIFY FAIL: root mounted on the default subvolume (want '/dev/mapper/root[/@/.snapshots/11/snapshot]', got '/dev/mapper/root[/@/.snapshots/8/snapshot]')
+==> VERIFY FAIL: grub.cfg has rootflags=subvol=
+==> VERIFY FAIL: grub.cfg kernel path is not inside @/.snapshots/11/snapshot
+==> VERIFY FAIL: grub prefix stamp (want '@/.snapshots/11/snapshot', got '@/.snapshots/8/snapshot')
+==> VERIFY FAIL: grub prefix in EFI/GRUB/grubx64.efi (want '@/.snapshots/11/snapshot', got '@/.snapshots/8/snapshot')
+==> VERIFY FAIL: grub prefix in EFI/BOOT/BOOTX64.EFI (want '@/.snapshots/11/snapshot', got '@/.snapshots/8/snapshot')
+==> VERIFY FAIL: snapper grub plugin
+==> VERIFY FAIL: /var/lib/pacman inside the root subvolume (want '/dev/mapper/root[/@/.snapshots/11/snapshot]', got '/dev/mapper/root[/@/.snapshots/8/snapshot]')
+==> VERIFY FAIL: grub-boot-sync.service enabled (want 'enabled', got 'disabled')
+```
+
+`verify` fails, loudly, on the state that boots. Recovery is §6's, unchanged.
+
+### Evidence
+
+`~/vm/v2`: `fullproof5.out` (full clean cycle), `proof-change13.log`,
+`proof-change1-boot.log`, `proof-change2a.log`, `proof-change2b.log`, and the
+break scripts `www/f1-desync.sh` … `www/f5-silent.sh`. qcow2 checkpoint
+`green-newinstaller` is the fresh install immediately after the clean cycle;
+`keep-recovered.qcow2` holds the §1–§11 disk with its own checkpoints.
