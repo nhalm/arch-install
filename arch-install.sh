@@ -409,11 +409,22 @@ EOF
 #!/bin/bash
 set -euo pipefail
 stamp=/efi/EFI/GRUB/root-subvol
+efi="/efi/EFI/GRUB/grubx64.efi /efi/EFI/BOOT/BOOTX64.EFI"
 ifchanged=0
 if [[ ${1:-} == --if-changed ]]; then ifchanged=1; shift; fi
 t=${1:-/}
 cur=$(btrfs subvolume get-default / | awk '{print $NF}')
-if (( ifchanged )) && [[ -r $stamp && $(cat "$stamp") == "$cur" ]] &&
+stale=0
+for f in $efi; do
+  p=$(grep -aoE '\)/[^)]*/boot/grub' "$f" 2>/dev/null | head -1 || true)
+  p=${p#)/}; p=${p%/boot/grub}
+  [[ -n $p && $p != "$cur" ]] || continue
+  stale=1
+  if btrfs subvolume list / | awk '{print $NF}' | grep -qxF "$p"
+  then echo "$f: prefix $p is stale, default is $cur" >&2
+  else echo "$f: prefix $p names a deleted subvolume" >&2; fi
+done
+if (( ifchanged && !stale )) && [[ -r $stamp && $(cat "$stamp") == "$cur" ]] &&
    ! grep -q rootflags=subvol= /boot/grub/grub.cfg; then exit 0; fi
 grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB \
   --boot-directory="$t/boot" || echo "grub-install: nvram entry failed" >&2
@@ -581,6 +592,13 @@ verify() {
   check "grub-sync helper" test -x "$MNT/usr/local/bin/grub-sync"
   got=$(cat "$MNT/efi/EFI/GRUB/root-subvol" 2>/dev/null || true)
   checkv "grub prefix stamp" "$dflt" "$got"
+  for t in "EFI/GRUB/grubx64.efi" "EFI/BOOT/BOOTX64.EFI"; do
+    got=$(grep -aoE '\)/[^)]*/boot/grub' "$MNT/efi/$t" 2>/dev/null | head -1 || true)
+    got=${got#)/}; got=${got%/boot/grub}
+    checkv "grub prefix in $t" "$dflt" "$got"
+    [[ -z $got ]] || grep -qxF "$got" <<<"$subvols" ||
+      FAILURES+=("grub prefix subvolume does not exist: $got")
+  done
   check "snapper grub plugin" test -x "$MNT/usr/lib/snapper/plugins/10-grub"
 
   check "vmlinuz-linux" test -s "$MNT/boot/vmlinuz-linux"
