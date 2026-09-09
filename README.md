@@ -191,6 +191,16 @@ Idempotent, needs no `DISK`, destroys nothing. `verify` pins the same values, so
 change both. `--no-dbus` on the read matters: a running `snapperd` serves the
 config it cached at startup and can report the old values.
 
+## If it will not boot
+
+[RECOVERY.md](RECOVERY.md) — five failure modes, each reproduced in a VM and
+recovered with the commands shown. Covers a bad default subvolume, GRUB anchored
+to a deleted snapshot, a destroyed kernel, a corrupt `grub.cfg`, and a
+`rootflags=subvol=` that boots but silently disables rollback.
+
+Note the root account is locked, so emergency mode gives you no shell — recovery
+is from the Arch ISO.
+
 ## Test
 
 `test/` boots the installer in a QEMU UEFI VM. See `test/HARNESS.md`.
