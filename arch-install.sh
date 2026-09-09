@@ -7,10 +7,13 @@
 #      EXTRA_PACKAGES CONFIRM LUKS_PASSPHRASE USER_PASSWORD ROOT_PASSWORD
 #      LUKS_PBKDF_MEMORY
 # Usage: DISK=/dev/vda ./arch-install.sh [install|verify]   (CONFIRM=yes to skip the prompt)
+#        MNT=/ ./arch-install.sh snapper                   (re-apply snapper config in place)
 set -euo pipefail
 
 if [[ ${HOSTNAME:-} == "$(uname -n)" ]]; then unset HOSTNAME; fi
-DISK="${DISK:?set DISK, e.g. /dev/vda or /dev/nvme0n1}"
+MODE="${1:-install}"
+if [[ $MODE == snapper ]]; then DISK="${DISK-}"
+else DISK="${DISK:?set DISK, e.g. /dev/vda or /dev/nvme0n1}"; fi
 HOSTNAME="${TARGET_HOSTNAME:-${HOSTNAME:-asus}}"
 USERNAME="${USERNAME:-nick}"
 TZ="${TZ:-US/Central}"
@@ -20,7 +23,6 @@ UCODE="${UCODE:-intel-ucode}"
 EXTRA_PACKAGES="${EXTRA_PACKAGES-git}"
 CONFIRM="${CONFIRM:-no}"   # yes = skip the prompt
 LUKS_PBKDF_MEMORY="${LUKS_PBKDF_MEMORY-524288}"
-MODE="${1:-install}"
 
 MNT="${MNT:-/mnt}"
 MNT="${MNT%/}"
@@ -72,23 +74,31 @@ wait_for() {
 }
 
 preflight() {
+  case $MODE in install | verify | snapper) ;; *) die "unknown mode: $MODE (install|verify|snapper)" ;; esac
   (( EUID == 0 )) || die "must run as root"
   [[ -d /sys/firmware/efi/efivars ]] || die "not booted in UEFI mode"
+  if [[ $MODE == snapper && -n $MNT ]]; then
+    findmnt -M "$MNT" >/dev/null ||
+      die "snapper: MNT=$MNT is not mounted; use MNT=/ to re-apply on the running system"
+  fi
   # The installed system has none of the install-time tooling (gptfdisk,
-  # arch-install-scripts, dosfstools), so `verify` must not demand it.
+  # arch-install-scripts, dosfstools), so `verify` and `snapper` must not demand it.
   local t tools=(cryptsetup btrfs blkid lsblk findmnt)
-  if [[ $MODE != verify ]]; then
+  if [[ $MODE == install ]]; then
     tools+=(sgdisk mkfs.btrfs mkfs.fat pacstrap arch-chroot genfstab partprobe udevadm)
   elif [[ -n $MNT ]]; then
     tools+=(arch-chroot)
+  elif [[ $MODE == snapper ]]; then
+    tools+=(snapper systemctl)
   fi
   for t in "${tools[@]}"; do
     command -v "$t" >/dev/null || die "missing tool: $t"
   done
+  [[ $MODE == snapper ]] && return 0
   [[ -b $DISK ]] || die "DISK=$DISK is not a block device"
   [[ $(lsblk -dno TYPE "$DISK") == disk ]] || die "DISK=$DISK is not a whole disk"
 
-  if [[ $MODE != verify ]]; then
+  if [[ $MODE == install ]]; then
     local mounted sw
     mounted=$(lsblk -nro MOUNTPOINT "$DISK" | grep -c . || true)
     (( mounted == 0 )) || die "refusing: something on $DISK is mounted (live device?)"
@@ -291,21 +301,27 @@ passwords() {
   fi
 }
 
+# create-config errors out if the config already exists, so `snapper` mode has
+# to detect that and fall through to set-config.
+have_config() { target snapper --no-dbus -c "$1" get-config >/dev/null 2>&1; }
+
 snapper_setup() {
   msg "snapper"
-  [[ ! -e $MNT/.snapshots ]] || die ".snapshots present before create-config"
-  arch-chroot "$MNT" snapper --no-dbus -c root create-config /
-  mount_snapshots
+  if ! have_config root; then
+    [[ ! -e $MNT/.snapshots ]] || die ".snapshots present before create-config"
+    target snapper --no-dbus -c root create-config /
+    findmnt -M "$MNT/.snapshots" >/dev/null 2>&1 || mount_snapshots
+  fi
 
   # home's .snapshots is a nested subvolume inside @/home. `snapper rollback`
   # refuses any config whose SUBVOLUME is not / (doc s10.1), so @/home is never
   # swapped wholesale and the nesting hazard does not apply.
-  arch-chroot "$MNT" snapper --no-dbus -c home create-config /home
+  have_config home || target snapper --no-dbus -c home create-config /home
 
   # Limits are ranges on purpose. Range::is_degenerated() is min==max, and
   # Cleaner::is_free_aware() returns false for a degenerate range, so a scalar
   # NUMBER_LIMIT silently switches FREE_LIMIT off (doc s6.1).
-  arch-chroot "$MNT" snapper --no-dbus -c root set-config \
+  target snapper --no-dbus -c root set-config \
     ALLOW_USERS="$USERNAME" \
     SYNC_ACL=yes \
     FREE_LIMIT=0.2 \
@@ -325,7 +341,7 @@ snapper_setup() {
     EMPTY_PRE_POST_CLEANUP=yes \
     EMPTY_PRE_POST_MIN_AGE=1800
 
-  arch-chroot "$MNT" snapper --no-dbus -c home set-config \
+  target snapper --no-dbus -c home set-config \
     ALLOW_USERS="$USERNAME" \
     SYNC_ACL=yes \
     FREE_LIMIT=0.2 \
@@ -358,10 +374,11 @@ EOF
 Persistent=true
 EOF
 
-  arch-chroot "$MNT" systemctl enable snapper-timeline.timer snapper-cleanup.timer
-  arch-chroot "$MNT" snapper --no-dbus -c root get-config |
+  [[ -n $MNT ]] || systemctl daemon-reload
+  target systemctl enable snapper-timeline.timer snapper-cleanup.timer
+  target snapper --no-dbus -c root get-config |
     grep -E 'TIMELINE_LIMIT_HOURLY|NUMBER_LIMIT|ALLOW_USERS|QGROUP|SYNC_ACL|FREE_LIMIT' || true
-  arch-chroot "$MNT" snapper --no-dbus -c home get-config |
+  target snapper --no-dbus -c home get-config |
     grep -E 'NUMBER_LIMIT|TIMELINE_LIMIT_WEEKLY|ALLOW_USERS' || true
 }
 
@@ -728,6 +745,10 @@ main() {
   if [[ $MODE == verify ]]; then
     verify_mount
     verify
+    return 0
+  fi
+  if [[ $MODE == snapper ]]; then
+    snapper_setup
     return 0
   fi
   banner
