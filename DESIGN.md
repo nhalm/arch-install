@@ -15,7 +15,7 @@ Change any of these and rollback silently stops working.
 | btrfs quotas OFF | `FREE_LIMIT` needs only `statvfs`. snapper 0.13.1 forces a full `quota_rescan` on every cleanup when quotas are on. |
 | `ALLOW_USERS`/`SYNC_ACL` first in the key list | That ordering is what triggers `syncAcl()`. |
 | LUKS keyfile in the initramfs | Without it GRUB and the initramfs each prompt. Keyfile is mode 000 inside the encrypted volume; a broken keyfile degrades to a second prompt, not an unbootable system. |
-| `--ambit=classic` on the first rollback | `idToNum()` requires a path ending `/<N>/snapshot`; `@` is not one. Later rollbacks do not need it. |
+| The default subvolume is set to a snapshot at install time | `snapper rollback`'s AUTO ambit needs `idToNum()` to parse the default subvolume path, which must end `/<N>/snapshot`; `@` does not. Booting from `@` would make the first rollback need `--ambit=classic`. `first_snapshot()` sets the default to `@/.snapshots/<N>/snapshot`, so every rollback is an ordinary one. |
 
 ## Re-applying
 
