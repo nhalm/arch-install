@@ -43,21 +43,32 @@ Needs `qemu-base` + `edk2-ovmf` and an Arch ISO in `test/`. See HARNESS.md.
 
 | # | Test | How | Status |
 |---|---|---|---|
-| 2.1 | Clean install end to end | `./test/vmtest.sh cycle ./test/guest-install.sh 900` | not run |
-| 2.2 | `verify` passes on the unmounted install | inside 2.1 | not run |
-| 2.3 | Boots unattended to a login prompt | `vmtest.sh run` | not run |
-| 2.4 | `verify` passes on the booted system (`MNT=/`) | in-guest | not run |
-| 2.5 | Exactly one passphrase prompt, at GRUB | serial log | not run |
-| 2.6 | zswap on, no zram device, one swap area | in-guest | not run |
+| 2.1 | Clean install end to end | `./test/vmtest.sh cycle ./test/guest-install.sh 1800` | **pass** |
+| 2.2 | `verify` passes on the unmounted install | inside 2.1 | **pass** — `all invariants hold` |
+| 2.3 | Boots unattended to a login prompt | `vmtest.sh run` | **pass** |
+| 2.4 | Runtime checks on the booted system | `drive-runtime.sh guest-runtime.sh` | **pass** — 31/31 |
+| 2.5 | Exactly one passphrase prompt, at GRUB | serial log | **pass** — one blind `key` send unlocks and boots |
+| 2.6 | zswap on, no zram device, one swap area | in 2.4 | **pass** |
 | 2.7 | Hibernate and resume actually work | `hibernate-selftest` | not run |
-| 2.8 | Swap survives a reboot unformatted | compare `mkswap` UUID | not run |
+| 2.8 | Swap survives a reboot unformatted | compare `mkswap` UUID | **pass** — stable UUID, no `systemd-makefs` in the unit |
 | 2.9 | `power` mode re-applies in place | `MNT=/ ./arch-install.sh power` | not run |
 | 2.10 | Rollback still works with the new layout | `rollback-test.sh` 4 phases | not run |
 
 **2.7** is the headline. Write a marker into RAM, hibernate, confirm the machine
 actually powered off, boot, confirm the marker survived *and* that the kernel
 came back from the image rather than booting fresh (`/sys/power/resume` consumed,
-no fresh `boot_id`).
+no fresh `boot_id`). `/dev/shm` is the marker: tmpfs is RAM-only, so it survives
+a resume and cannot survive a reboot — which is what stops a failed resume from
+being mistaken for a successful one, since a machine that fails to resume simply
+boots and looks healthy.
+
+**Current status: `systemctl hibernate` returns without powering the machine
+off.** Under investigation. The leading candidate is the harness rather than the
+installer: QEMU's `ICH9-LPC` exposes a `disable_s4` property, and if ACPI S4 is
+not advertised the guest cannot enter hibernation no matter how correct the swap
+and `resume=` wiring is. Everything static about that wiring already passes —
+1.2 proves the units are generated, 2.4 proves `/sys/power/resume` is populated
+and the swap area is large enough. What is unproven is entry itself.
 
 **2.8** guards the crypttab hazard from the other side: 1.2 proves the generator
 does not emit `systemd-makefs`; this proves nothing else reformats it either.

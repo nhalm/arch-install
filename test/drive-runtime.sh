@@ -36,10 +36,22 @@ curl -sf --max-time 3 "http://127.0.0.1:$PORT/$SCRIPT" >/dev/null ||
 say "booting the installed disk"
 "$VMTEST" run >/dev/null
 
-# GRUB is silent on serial. Give the firmware and GRUB time to reach the prompt,
-# then type the passphrase blind. 20 s is generous for OVMF plus GRUB's menu.
-say "waiting for GRUB, then sending the passphrase blind"
-sleep 20
+# OVMF with no display routes the firmware console to the serial port, so GRUB's
+# passphrase prompt DOES appear in the log. Wait for it rather than guessing at a
+# sleep -- a blind timer races the boot and silently mistypes the passphrase into
+# whatever is on screen at the time.
+say "waiting for GRUB's passphrase prompt"
+start=$(date +%s)
+until grep -aq 'Enter passphrase for' "$LOG" 2>/dev/null; do
+  if ! pgrep -f qemu-system >/dev/null; then echo "qemu died before GRUB" >&2; exit 125; fi
+  if [ $(( $(date +%s) - start )) -ge 180 ]; then
+    echo "no GRUB passphrase prompt within 180s" >&2
+    tail -20 "$LOG" | tr -d '\r' >&2; exit 124
+  fi
+  sleep 2
+done
+say "prompt reached; sending the passphrase"
+sleep 1
 "$VMTEST" key "$PASSPHRASE"
 
 # argon2id in GRUB, then the kernel. The login prompt is the first thing that
@@ -55,11 +67,32 @@ until grep -aq 'login:' "$LOG" 2>/dev/null; do
   sleep 3
 done
 say "login prompt reached"
-sleep 2
+
+# Wait for a string to appear AFTER a byte offset, so a prompt from an earlier
+# failed attempt cannot satisfy the wait. Typing into a prompt that is not there
+# yet is how the password ends up echoed at the next login prompt instead.
+wait_for_after() {
+  local pat=$1 from=$2 limit=${3:-90} start
+  start=$(date +%s)
+  until tail -c "+$from" "$LOG" 2>/dev/null | grep -aq "$pat"; do
+    if [ $(( $(date +%s) - start )) -ge "$limit" ]; then
+      echo "timeout waiting for '$pat'" >&2; return 1
+    fi
+    sleep 1
+  done
+}
 
 # Root is locked by design, so go in as the user and escalate with sudo -S.
-"$VMTEST" send "$USERNAME" >/dev/null; sleep 2
-"$VMTEST" send "$USERPASS" >/dev/null; sleep 4
+off=$(( $(wc -c < "$LOG") + 1 ))
+"$VMTEST" send "$USERNAME" >/dev/null
+wait_for_after 'Password:' "$off" 60 || exit 124
+off=$(( $(wc -c < "$LOG") + 1 ))
+"$VMTEST" send "$USERPASS" >/dev/null
+# The shell prompt is the proof the password was accepted.
+wait_for_after "@${HOSTNAME_EXPECT:-archvm}" "$off" 60 || {
+  echo "login did not reach a shell" >&2; tail -12 "$LOG" | tr -d '\r' >&2; exit 124; }
+say "logged in"
+off=$(( $(wc -c < "$LOG") + 1 ))
 "$VMTEST" send "echo $USERPASS | sudo -S curl -fsSL -o /tmp/t.sh http://10.0.2.2:$PORT/$SCRIPT && echo $USERPASS | sudo -S bash /tmp/t.sh" >/dev/null
 
 say "running $SCRIPT in the guest"

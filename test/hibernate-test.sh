@@ -49,9 +49,17 @@ EOF
   msg "hibernating now -- the machine should POWER OFF, not reboot"
   sync
   systemctl hibernate
-  # Reached only if hibernate refused to start. A successful hibernate powers
-  # the machine off and this line never runs.
-  die "hibernate returned without powering off -- entry failed"
+  # Two ways to get here, and they are opposite outcomes:
+  #   - the machine powered off, was booted again, and the kernel restored this
+  #     very process from the image. That is success, and it is what phase2
+  #     then proves from the outside.
+  #   - hibernate refused to start and returned immediately. That is failure.
+  # Distinguish them by whether the RAM marker is still the one we wrote: a
+  # refusal never left this boot, so /proc/uptime is still climbing from the
+  # original boot and no power cycle happened. Only phase2 can tell for sure,
+  # so do not claim either here.
+  msg "systemctl hibernate returned; if the machine power-cycled this is a resume"
+  msg "run '$0 phase2' to confirm which happened"
 }
 
 phase2() {
