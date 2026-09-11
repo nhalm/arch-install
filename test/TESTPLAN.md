@@ -51,8 +51,8 @@ Needs `qemu-base` + `edk2-ovmf` and an Arch ISO in `test/`. See HARNESS.md.
 | 2.6 | zswap on, no zram device, one swap area | in 2.4 | **pass** |
 | 2.7 | Hibernate and resume actually work | `hibernate-selftest` | not run |
 | 2.8 | Swap survives a reboot unformatted | compare `mkswap` UUID | **pass** — stable UUID, no `systemd-makefs` in the unit |
-| 2.9 | `power` mode re-applies in place | `MNT=/ ./arch-install.sh power` | not run |
-| 2.10 | Rollback still works with the new layout | `rollback-test.sh` 4 phases | not run |
+| 2.9 | `power` mode re-applies in place | `MNT=/ ./arch-install.sh power` | **pass** — 6/6, idempotent, lid policy untouched |
+| 2.10 | Rollback still works with the new layout | `rollback-test.sh` 4 phases | **pass** — all 4 phases; cmdline intact after 3 rollbacks |
 
 **2.7** is the headline. Write a marker into RAM, hibernate, confirm the machine
 actually powered off, boot, confirm the marker survived *and* that the kernel
@@ -100,6 +100,21 @@ QEMU (`disable_s4`) turned out to be wrong when actually checked.
 it reproduces there, hibernate-resume is unusable as shipped and the escalation
 policy should fall back to plain suspend until it is fixed. If it does not, this
 is a harness limitation and nothing more.
+
+**2.10 detail.** All four phases passed against the three-partition layout:
+rolled back across a deliberately destroyed kernel and both initramfs images and
+booted the restored one (`/proc/cmdline` carries the *pre-snapshot* `rt=` token,
+proving GRUB read the restored `grub.cfg` rather than a stale one that still
+resolved), survived a second rollback, and still booted after cleanup deleted
+eight snapshots -- the state that produces `grub rescue>` in RECOVERY.md §3.
+
+Extra assertions were added for the new cmdline entries, because `grub-sync`
+regenerates `grub.cfg` on every rollback and applies a `sed` that strips
+`rootflags=subvol=` from the same line. After three rollbacks: `resume=` and
+`zswap.enabled=1` both still present (x3 each), `rootflags=subvol=` still absent,
+`rw` still appearing exactly once, and `/sys/power/resume` still populated. Had
+that `sed` been eating the new entries, hibernation would have stopped working
+silently after the first rollback.
 
 **2.8** guards the crypttab hazard from the other side: 1.2 proves the generator
 does not emit `systemd-makefs`; this proves nothing else reformats it either.
