@@ -13,7 +13,13 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VMTEST="$HERE/vmtest.sh"
 LOG="$HERE/serial.log"
-SCRIPT="${1:?usage: drive-runtime.sh <script-in-www> [timeout]}"
+# --resumed: the machine is expected to come back from a hibernation image, so
+# there is no login prompt -- the restored session is already logged in. Waiting
+# for "login:" in that case hangs forever, which is itself a decent proof that
+# the resume happened, but a useless one to automate against.
+RESUMED=0
+if [ "${1:-}" = "--resumed" ]; then RESUMED=1; shift; fi
+SCRIPT="${1:?usage: drive-runtime.sh [--resumed] <script-in-www> [timeout]}"
 LIMIT="${2:-600}"
 PASSPHRASE="${LUKS_PASSPHRASE:-vmtestluks}"
 USERNAME="${USERNAME:-nick}"
@@ -56,6 +62,25 @@ sleep 1
 
 # argon2id in GRUB, then the kernel. The login prompt is the first thing that
 # proves the passphrase was accepted and the system actually booted.
+if [ "$RESUMED" = 1 ]; then
+  # A resumed machine returns to the session that was running when it froze, so
+  # the proof of resume is the shell prompt coming back with no login in
+  # between. Wait for that instead.
+  say "waiting for the restored shell prompt (no login: on a resumed machine)"
+  start=$(date +%s)
+  until grep -aq "@${HOSTNAME_EXPECT:-archvm}" "$LOG" 2>/dev/null; do
+    if [ $(( $(date +%s) - start )) -ge "$LIMIT" ]; then
+      echo "timeout waiting for a restored shell" >&2
+      tail -30 "$LOG" | tr -d '\r' >&2
+      exit 124
+    fi
+    sleep 3
+  done
+  say "restored shell reached -- the machine resumed rather than booted"
+  sleep 2
+  off=$(( $(wc -c < "$LOG") + 1 ))
+  "$VMTEST" send "echo $USERPASS | sudo -S bash -c 'curl -fsSL -o /tmp/t.sh http://10.0.2.2:$PORT/$SCRIPT && bash /tmp/t.sh'" >/dev/null
+else
 say "waiting for a login prompt (proves GRUB unlocked and the kernel came up)"
 start=$(date +%s)
 until grep -aq 'login:' "$LOG" 2>/dev/null; do
@@ -94,6 +119,8 @@ wait_for_after "@${HOSTNAME_EXPECT:-archvm}" "$off" 60 || {
 say "logged in"
 off=$(( $(wc -c < "$LOG") + 1 ))
 "$VMTEST" send "echo $USERPASS | sudo -S curl -fsSL -o /tmp/t.sh http://10.0.2.2:$PORT/$SCRIPT && echo $USERPASS | sudo -S bash /tmp/t.sh" >/dev/null
+
+fi
 
 say "running $SCRIPT in the guest"
 start=$(date +%s)

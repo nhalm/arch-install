@@ -48,18 +48,25 @@ EOF
   msg "free before: $(free -m | awk '/^Mem:/{print $3}')M used"
   msg "hibernating now -- the machine should POWER OFF, not reboot"
   sync
+  # `systemctl hibernate` is ASYNCHRONOUS. It returns as soon as logind accepts
+  # the request -- "The system will hibernate now!" in the journal -- long
+  # before the kernel freezes tasks. Treating its return value as the outcome
+  # reports a working hibernate as a failure, which is exactly what this test
+  # did on its first run.
+  local t0 t1 elapsed
+  t0=$(date +%s)
   systemctl hibernate
-  # Two ways to get here, and they are opposite outcomes:
-  #   - the machine powered off, was booted again, and the kernel restored this
-  #     very process from the image. That is success, and it is what phase2
-  #     then proves from the outside.
-  #   - hibernate refused to start and returned immediately. That is failure.
-  # Distinguish them by whether the RAM marker is still the one we wrote: a
-  # refusal never left this boot, so /proc/uptime is still climbing from the
-  # original boot and no power cycle happened. Only phase2 can tell for sure,
-  # so do not claim either here.
-  msg "systemctl hibernate returned; if the machine power-cycled this is a resume"
-  msg "run '$0 phase2' to confirm which happened"
+  # If hibernation succeeds this process is frozen mid-sleep and the machine
+  # powers off; the sleep only finishes on the other side of a power cycle.
+  sleep 20
+  t1=$(date +%s); elapsed=$(( t1 - t0 ))
+  # A frozen process cannot observe wall time passing, so a large elapsed here
+  # means the machine really did power off and come back. A short one means
+  # hibernate never entered.
+  (( elapsed > 60 )) ||
+    die "still running ${elapsed}s after requesting hibernate -- entry failed"
+  msg "resumed after ${elapsed}s of wall time -- the machine hibernated and came back"
+  phase2
 }
 
 phase2() {
@@ -88,6 +95,7 @@ phase2() {
 
   msg "PASS: hibernate wrote an image, the machine powered off, and resume restored it"
   rm -f "$RAMMARK" "$STATE"
+  echo "===HIBERNATE-TEST rc=0==="
 }
 
 sentinel() {
