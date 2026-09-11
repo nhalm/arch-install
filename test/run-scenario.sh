@@ -27,7 +27,12 @@ unlock(){ local s=$(date +%s); until grep -aq 'Enter passphrase for' "$LOG" 2>/d
 
 serve
 say "SCENARIO $N: breaking the system"
-"$HERE/drive-runtime.sh" "t${N}-break.sh" 300 >/tmp/s${N}b.out 2>&1
+# 300 s was too tight with several VMs contending for the host: that budget has
+# to cover GRUB's argon2id unlock, a full boot, the login handshake and the
+# guest script. A scenario that times out here looks identical to a scenario
+# whose break hung the machine, which is the one distinction this test exists
+# to make.
+"$HERE/drive-runtime.sh" "t${N}-break.sh" 600 >/tmp/s${N}b.out 2>&1
 sed 's/\x1b\[[0-9;]*m//g' "$LOG" | tr -d '\r' | sed -n "/T${N}-BREAK/,/T${N}-BREAK-END/p"
 
 if [ "$MODE" = breakonly ]; then
@@ -78,3 +83,7 @@ echo "  booted after rescue: $booted  (expected: yes)"
 [ "$booted" = yes ] || exit 1
 archive final
 echo "phase logs: ${VM:-$HERE}/serial-{break,postbreak,rescue,final}.log"
+# Leave nothing running: five parallel scenarios each holding a 4 GB VM at a
+# login prompt is a lot of abandoned host memory, and a stray VM is what caused
+# the cross-scenario interference this harness already had to be fixed for.
+"$V" stop >/dev/null 2>&1

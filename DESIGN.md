@@ -5,7 +5,7 @@ Change any of these and rollback silently stops working.
 | Decision | Why |
 |---|---|
 | Root fstab line has no `subvol=` | `fs/btrfs/super.c` `mount_subvol()` consults the btrfs default subvolume only when no explicit `subvol=`/`subvolid=` is given. `snapper rollback` works by repointing that default. An explicit `subvol=@` silently defeats it. |
-| No `rootflags=subvol=` on the cmdline | Same mechanism. `util/grub.d/10_linux.in` injects it unconditionally; `grub-sync` strips it. |
+| No `rootflags=subvol=` on the cmdline | Same mechanism. `util/grub.d/10_linux.in` injects it unconditionally; `grub-sync` strips it. Verified in a VM: a hand-run `grub-mkconfig` reintroduces it on every menu entry and pins whatever subvolume happened to be current, after which rollbacks silently do nothing. It does **not** disturb `resume=` or `zswap.enabled=1` — those live in `GRUB_CMDLINE_LINUX_DEFAULT` and are reproduced faithfully — so the damage is narrow, single-purpose and invisible. `verify` catches it, and `grub-boot-sync.service` repairs it on the next boot because `grub-sync --if-changed` tests for `rootflags=subvol=` as well as for a stale prefix. |
 | Mount by `subvol=`, never `subvolid=`, for non-root | Rollback creates a new subvolume with a new ID. A numeric ID then names the old root. |
 | GRUB, not systemd-boot | systemd-boot cannot read btrfs — the Boot Loader Specification requires the ESP be firmware-readable (FAT), so a kernel there can never be in a snapshot. |
 | `/usr/lib/snapper/plugins/10-grub` + `grub-boot-sync.service` | Arch's GRUB has no btrfs subvolume support: `grub-core/fs/btrfs.c` resolves from subvolid 5. openSUSE's `btrfs_relative_path` is a SUSE patch that never merged. These re-point the embedded prefix after a rollback. |

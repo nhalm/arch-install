@@ -131,10 +131,10 @@ genuinely fails, recover it, then `verify`.
 | # | RECOVERY.md § | What changes with the new layout | Status |
 |---|---|---|---|
 | 3.1 | §2 bad default subvolume | Recovery mounts subvolid 5 as before; swap container is untouched and irrelevant. Expect no change. | not run |
-| 3.2 | §3 GRUB anchored to a deleted snapshot | `grub-sync` unchanged; cmdline now carries `resume=`, which the `rootflags=` sed must not eat. | not run |
+| 3.2 | §3 GRUB anchored to a deleted snapshot | **pass.** Break gave `grub rescue>` with `normal.mod not found` — *after* a successful passphrase unlock, now warned about in RECOVERY.md §3. `grub-sync` repaired prefix `@/.snapshots/99/snapshot` → `@/.snapshots/1/snapshot`, stamp agreed, both safety nets re-armed and confirmed to have actually run. `resume=` survived on all 3 kernel lines. | **pass** |
 | 3.3 | §4 destroyed kernel/initramfs | Restoring the initramfs must restore **both** keyfiles, or swap fails to attach and resume silently stops working. | not run |
-| 3.4 | §5 corrupt `grub.cfg` | Regenerating must reproduce `resume=` and `zswap.enabled=1`, not just the root line. | not run |
-| 3.5 | §6 `rootflags=subvol=` reintroduced | `verify` must still catch it, and must not be confused by the new cmdline entries. | not run |
+| 3.4 | §5 corrupt `grub.cfg` | **pass.** Break gave a bare `grub>` (`can't find command \`this'`), so GRUB read the file and failed on its contents. `grub-sync` from an ISO chroot regenerated it **complete**: `resume=` x3, `zswap.enabled=1` x3, `rootflags=subvol=` x0, `cryptomount` x4. Booted after rescue. | **pass** |
+| 3.5 | §6 `rootflags=subvol=` reintroduced | **pass.** Stock `grub-mkconfig` injected it on all 3 entries, pinning the live subvolume. `verify` failed with exactly one error (`grub.cfg has rootflags=subvol=`, exit 1). `resume=`/`zswap` untouched — the damage is narrow, not broad. `grub-sync` repaired it and `verify` passed clean; `--if-changed` also repairs it, so a reboot self-heals. | **pass** |
 | 3.6 | **new** — swap container header damaged | **pass, after a fix.** Boots with root intact, swap absent, `/sys/power/resume` `0:0`. But without `nofail` it first stalls the full 90 s device timeout — 196 s to a login prompt, looking exactly like a hang. `nofail` added to the fstab swap entry, with an invariant. | **pass** |
 | 3.7 | **new** — hibernate, then roll back, then resume | See below. | not run |
 

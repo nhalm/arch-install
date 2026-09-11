@@ -96,7 +96,7 @@ snapshot**, so they are themselves subject to rollback — see the finding in §
 
 | What you see | What it means | Go to |
 |---|---|---|
-| GRUB asks for the passphrase, then `error: file '/@/.snapshots/N/snapshot/boot/grub/x86_64-efi/normal.mod' not found.` → `grub rescue>` | GRUB's embedded prefix names a subvolume that no longer exists | §3 |
+| GRUB asks for the passphrase, **accepts it**, then `error: file '/@/.snapshots/N/snapshot/boot/grub/x86_64-efi/normal.mod' not found.` → `grub rescue>` | GRUB's embedded prefix names a subvolume that no longer exists | §3 |
 | `grub>` prompt with no menu | `grub.cfg` is unreadable/corrupt; GRUB itself is fine | §5 |
 | GRUB menu appears, `error: ... invalid magic number` when booting | kernel image inside the root snapshot is damaged | §4 |
 | Menu boots, then `Failed to start Switch Root.` / `You are in emergency mode` / `Cannot open access to console, the root account is locked` | kernel and initramfs are fine; the **default subvolume** does not contain a root filesystem | §2 |
@@ -243,6 +243,17 @@ cat /efi/EFI/GRUB/root-subvol           # @/.snapshots/19/snapshot
 ---
 
 ## 3. Rollback leaves GRUB anchored to a deleted snapshot — REPRODUCED, RECOVERED
+
+> [!IMPORTANT]
+> **Your passphrase is fine. Do not go looking at the LUKS header.**
+> `core.img` carries the cryptodisk modules, so GRUB unlocks the disk *before*
+> it needs anything from the prefix. You will see the passphrase prompt, you
+> will see `Slot "0" opened`, and only then does it fail to load `normal.mod`
+> from a subvolume that no longer exists. Watching a correct passphrase be
+> accepted and still landing in `grub rescue>` invites exactly the wrong
+> diagnosis — that the passphrase, the keyslot or the header is damaged. It is
+> none of those. Confirmed in a VM: the unlock succeeds every time and the
+> failure is purely about the missing prefix path.
 
 ### Break
 
