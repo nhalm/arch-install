@@ -62,13 +62,44 @@ a resume and cannot survive a reboot — which is what stops a failed resume fro
 being mistaken for a successful one, since a machine that fails to resume simply
 boots and looks healthy.
 
-**Current status: `systemctl hibernate` returns without powering the machine
-off.** Under investigation. The leading candidate is the harness rather than the
-installer: QEMU's `ICH9-LPC` exposes a `disable_s4` property, and if ACPI S4 is
-not advertised the guest cannot enter hibernation no matter how correct the swap
-and `resume=` wiring is. Everything static about that wiring already passes —
-1.2 proves the units are generated, 2.4 proves `/sys/power/resume` is populated
-and the swap area is large enough. What is unproven is entry itself.
+**Status: entry PROVEN, resume PARTIAL, post-resume stability FAILS in this VM.**
+
+Established, with journal evidence from the guest:
+
+* **Hibernate entry works.** `systemd-logind: The system will hibernate now!`,
+  `user.slice: Unit now frozen`, `systemd-sleep: Performing sleep operation
+  'hibernate'`, then the machine powers itself off. Reproduced many times.
+* **The image is written and read back.** The next boot runs `Resume from
+  hibernation` in the initrd, the serial log is ~4 KB rather than the ~20 KB a
+  fresh boot produces, and output buffered *before* the freeze flushes on the
+  far side carrying the pre-hibernate `boot_id`. Memory is genuinely restored.
+* **The machine then powers off ~20 s later.** Cleanly: no panic, no oops, no
+  call trace, and **journald records nothing at all** for the resumed portion of
+  that boot. The failure is therefore early in resume, before userspace logging
+  is running again.
+
+Reproduced with `test/www/plainhib.sh` — three lines, `systemctl hibernate` with
+nothing pending across the freeze — so it is **not** an artifact of
+`hibernate-test.sh` holding an in-flight async sleep operation, which was the
+first and most obvious suspect.
+
+**Everything the installer controls is verified correct**, which is what makes
+this worth separating out: `resume=` on the cmdline (1.2 proves it is what arms
+the unit), the crypttab entry without the destructive `swap` option, the unit
+ordering at runtime (swap attached -> resume attempted -> `swapon`), the swap
+size against the `35/32` worst case, and `/sys/power/resume` populated at
+runtime. None of the remaining failure is in that surface.
+
+**Leading hypothesis, UNVERIFIED: a QEMU S4-resume limitation rather than an
+installer defect.** Consistent with a clean power-off, no kernel errors, and
+nothing logged. Not proven, and deliberately not asserted — `/sys/power/disk`
+reads `[platform]`, so S4 *is* advertised, and an earlier confident theory about
+QEMU (`disable_s4`) turned out to be wrong when actually checked.
+
+**This must be tested on the real laptop before hibernation is relied on.** If
+it reproduces there, hibernate-resume is unusable as shipped and the escalation
+policy should fall back to plain suspend until it is fixed. If it does not, this
+is a harness limitation and nothing more.
 
 **2.8** guards the crypttab hazard from the other side: 1.2 proves the generator
 does not emit `systemd-makefs`; this proves nothing else reformats it either.
