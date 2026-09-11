@@ -47,13 +47,31 @@ down 180 || { echo "guest never rebooted"; "$V" stop >/dev/null 2>&1; }
 say "SCENARIO $N: does it still boot? (it should NOT)"
 "$V" run >/dev/null 2>&1
 unlock || echo "  (no GRUB prompt -- itself a failure mode)"
-s=$(date +%s); booted=no
+# A machine parked at grub rescue>, in the initramfs shell, or at a systemd
+# emergency prompt is alive and quiet, so it satisfies neither "reached a login
+# prompt" nor "qemu died" -- without this third exit the EXPECTED outcome of a
+# break is the one that always runs the clock out.
+#
+# The ^ anchor is load-bearing. Break scripts print their own predictions
+# ("expect grub rescue>"), so an unanchored match would let a scenario confirm
+# its break by matching its own console echo -- a self-confirming false
+# positive, silent and convincing. Measured against archived phase logs:
+# unanchored matched the break script's echo, ^-anchored matched only the real
+# rescue prompts, which are always at line start.
+STUCK='^(grub rescue>|Entering rescue mode|Entering emergency mode|You are in emergency mode|\(initramfs\)|Press Enter for maintenance)'
+s=$(date +%s); booted=no; why=timeout
 while [ $(( $(date +%s)-s )) -lt 150 ]; do
-  grep -aq 'archvm login:' "$LOG" 2>/dev/null && { booted=yes; break; }
-  kill -0 "$(cat "${VM:-$HERE}/vm.pid" 2>/dev/null || echo 0)" 2>/dev/null || break
+  grep -aq 'archvm login:' "$LOG" 2>/dev/null && { booted=yes; why='reached a login prompt'; break; }
+  sed 's/\x1b\[[0-9;]*m//g' "$LOG" | tr -d '\r' | grep -aqE "$STUCK" &&
+    { why='parked in a rescue/emergency shell'; break; }
+  kill -0 "$(cat "${VM:-$HERE}/vm.pid" 2>/dev/null || echo 0)" 2>/dev/null ||
+    { why='qemu exited'; break; }
   sleep 5
 done
-echo "  booted after break: $booted  (expected: no)"
+# Why it stopped matters as much as whether it booted: a break that silently
+# hung the machine and a break that produced a clean grub rescue> are different
+# results, and reporting only "booted: no" cannot tell them apart.
+echo "  booted after break: $booted  ($why; expected: no)"
 echo "  --- what it said ---"
 sed 's/\x1b\[[0-9;]*m//g' "$LOG" | tr -d '\r' | grep -aiE 'error|emergency|rescue|magic|failed|cannot|Entering' | tail -6
 "$V" stop >/dev/null 2>&1; sleep 1
@@ -73,13 +91,17 @@ archive rescue
 say "SCENARIO $N: does it boot after the rescue? (it SHOULD)"
 "$V" run >/dev/null 2>&1
 unlock || { echo "  RESCUE FAILED: no GRUB prompt"; exit 1; }
-s=$(date +%s); booted=no
+s=$(date +%s); booted=no; why=timeout
 while [ $(( $(date +%s)-s )) -lt 200 ]; do
-  grep -aq 'archvm login:' "$LOG" 2>/dev/null && { booted=yes; break; }
-  kill -0 "$(cat "${VM:-$HERE}/vm.pid" 2>/dev/null || echo 0)" 2>/dev/null || break
+  grep -aq 'archvm login:' "$LOG" 2>/dev/null && { booted=yes; why='reached a login prompt'; break; }
+  sed 's/\x1b\[[0-9;]*m//g' "$LOG" | tr -d '\r' | grep -aqE "$STUCK" &&
+    { why='STILL parked in a rescue/emergency shell -- rescue did not work'; break; }
+  kill -0 "$(cat "${VM:-$HERE}/vm.pid" 2>/dev/null || echo 0)" 2>/dev/null ||
+    { why='qemu exited'; break; }
   sleep 5
 done
-echo "  booted after rescue: $booted  (expected: yes)"
+# A failed rescue otherwise burns the full budget and exits 1 with no reason.
+echo "  booted after rescue: $booted  ($why; expected: yes)"
 [ "$booted" = yes ] || exit 1
 archive final
 echo "phase logs: ${VM:-$HERE}/serial-{break,postbreak,rescue,final}.log"

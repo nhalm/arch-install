@@ -176,3 +176,22 @@ disconnects, so `send` writes a byte at a time and lingers 0.5s before closing.
 - A stale `python3 -m http.server` on the same port will answer a naive
   readiness probe while serving the wrong directory. `serve_bg` writes a nonce
   file and checks it comes back, and dies if the bind failed.
+
+## Writing break/rescue scripts: two traps
+
+**Never let a check match text your own script printed.** Break scripts announce
+what they expect (`echo "expect grub rescue>"`), so any check scanning the
+serial log for a failure string can match the prediction instead of the failure.
+That is a self-confirming false positive: the scenario proves its break worked
+by reading its own console echo, silently and convincingly. Anchor failure
+patterns at line start (`^grub rescue>`) — real prompts are always at line
+start, predictions are mid-sentence — or record a byte offset after `vmtest.sh
+run` and match with `tail -c +$off`, the way `drive-runtime.sh`'s
+`wait_for_after()` already does. Measured against real phase logs: unanchored
+matched the break script's own echo; anchored matched only the genuine prompts.
+
+**`vmtest.sh send` garbles long command lines in the console echo** while
+executing them correctly. It is a display artefact of byte-at-a-time writing, not
+a delivery failure. The practical constraint: never parse the echoed command
+text, only marker-framed output the guest itself produces
+(`=====THING=====` … `=====THING-END=====`).
