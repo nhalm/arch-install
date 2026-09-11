@@ -403,9 +403,14 @@ mkinitcpio -P
 # the fallback preset would (-S autodetect: every module, not just this host's).
 [[ -s /boot/initramfs-linux-fallback.img ]] ||
   mkinitcpio -k /boot/vmlinuz-linux -g /boot/initramfs-linux-fallback.img -S autodetect
+# A warning on stderr is the wrong severity here. FILES= was asserted just above,
+# so a keyfile missing from the image means mkinitcpio did not do what it was
+# told -- and the consequence is silent: a missing root.key costs a second
+# passphrase prompt, a missing swap.key costs swap and resume entirely, on a
+# machine that otherwise boots perfectly.
 for k in "$KEYFILE" "$SWAPKEY"; do
   lsinitcpio /boot/initramfs-linux.img | grep -q "${k#/}" ||
-    echo "==> WARNING: $k not in initramfs; expect a passphrase prompt for it" >&2
+    die "$k is listed in FILES= but is not in the initramfs; mkinitcpio did not embed it"
 done
 
 # Arch ships systemd's upstream 90-systemd.preset unmodified plus a
@@ -914,8 +919,13 @@ verify() {
   checkv "keyfile mode" "0" "$got"
   check "crypttab.initramfs" grep -q "^root UUID=.* $KEYFILE " "$MNT/etc/crypttab.initramfs"
   check "mkinitcpio FILES=" grep -qx "FILES=($KEYFILE $SWAPKEY)" "$MNT/etc/mkinitcpio.conf"
-  check "keyfile in initramfs" target \
+  # FILES= listing both is asserted above; this asserts both were actually
+  # EMBEDDED. Checking only root.key would pass an image missing swap.key, which
+  # boots perfectly and silently has no swap and no resume.
+  check "root keyfile in initramfs" target \
     bash -c "lsinitcpio /boot/initramfs-linux.img | grep -q cryptsetup-keys.d/root.key"
+  check "swap keyfile in initramfs" target \
+    bash -c "lsinitcpio /boot/initramfs-linux.img | grep -q cryptsetup-keys.d/swap.key"
 
   hooks=$(grep -E '^HOOKS=' "$MNT/etc/mkinitcpio.conf" || true)
   hooks=${hooks#HOOKS=(}
@@ -1002,8 +1012,6 @@ verify() {
     grep -q '^swap UUID=.*x-initrd\.attach' "$MNT/etc/crypttab.initramfs"
   got=$(stat -c '%a' "$MNT$SWAPKEY" 2>/dev/null || true)
   checkv "swap keyfile mode" "0" "$got"
-  check "swap keyfile in initramfs" target \
-    bash -c "lsinitcpio /boot/initramfs-linux.img | grep -q cryptsetup-keys.d/swap.key"
   # The resume hook belongs to the busybox path; systemd-hibernate-resume-generator
   # does this job here. Its presence would mean someone cargo-culted it in.
   got=$(grep -E '^HOOKS=' "$MNT/etc/mkinitcpio.conf" | tr ' ()' '\n\n\n' | grep -cx resume || true)
