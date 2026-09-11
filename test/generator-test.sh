@@ -32,7 +32,7 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # The crypttab arch-install.sh writes, and the one-word mistake it warns about.
 cat >"$T/crypttab.good" <<EOF
 root UUID=$ROOTUUID $KEYFILE luks,discard
-swap UUID=$SWAPUUID $SWAPKEY luks,x-initrd.attach
+swap UUID=$SWAPUUID $SWAPKEY luks,x-initrd.attach,x-systemd.device-timeout=10s
 EOF
 sed 's/luks,x-initrd.attach/luks,swap/' "$T/crypttab.good" >"$T/crypttab.bad"
 
@@ -58,6 +58,10 @@ if [[ -f $U ]]; then
   want "no Conflicts=umount.target (mapping survives switch-root)" \
        "$(grep -c '^Conflicts=umount.target' "$U" || true)" "0"
   # systemd-escape emits \x2d for each dash, so match it literally.
+  # The underlying by-uuid device is the one that never appears when the LUKS
+  # header is destroyed, and it is NOT covered by resumeflags= on the cmdline.
+  want "underlying device wait is bounded" \
+       "$(find "$T/good" -name '50-device-timeout.conf' -exec grep -l 'JobRunningTimeoutSec=10s' {} \; 2>/dev/null | wc -l)" "1"
   want "BindsTo the swap device" \
        "$(grep -Fc "BindsTo=dev-disk-by\\x2duuid-$(systemd-escape "$SWAPUUID")" "$U" || true)" "1"
 else

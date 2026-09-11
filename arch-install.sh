@@ -348,7 +348,13 @@ keyfile() {
     printf '# x-initrd.attach keeps the mapping across the initrd -> host switch-root:\n'
     printf '# without it the generated unit gets Conflicts=umount.target, because\n'
     printf '# attach_in_initrd() special-cases only the names "root" and "usr".\n'
-    printf 'swap UUID=%s %s luks,x-initrd.attach\n' "$swapuuid" "$SWAPKEY"
+    printf '# x-systemd.device-timeout bounds the wait for the UNDERLYING partition.\n'
+    printf '# A destroyed LUKS header means this by-uuid symlink never appears, and\n'
+    printf '# without this the initramfs waits the full 90 s default for it. Measured:\n'
+    printf '# 192 s to a login prompt instead of 14 s. resumeflags= on the cmdline does\n'
+    printf '# NOT cover this -- that bounds /dev/mapper/swap, which is downstream of\n'
+    printf '# this device and never gets created at all.\n'
+    printf 'swap UUID=%s %s luks,x-initrd.attach,x-systemd.device-timeout=10s\n' "$swapuuid" "$SWAPKEY"
   } >"$MNT/etc/crypttab.initramfs"
   chmod 600 "$MNT/etc/crypttab.initramfs"
   cryptsetup luksDump "$CRYPT"     | grep -E '^[[:space:]]*[0-9]+: luks2' || true
@@ -1010,6 +1016,11 @@ verify() {
   checkv "crypttab swap has no 'swap' option" "0" "$got"
   check "crypttab swap has x-initrd.attach" \
     grep -q '^swap UUID=.*x-initrd\.attach' "$MNT/etc/crypttab.initramfs"
+  # Bounds the wait for the underlying partition. Without it a destroyed LUKS
+  # header costs 90 s of boot, which resumeflags= does not cover: that bounds
+  # the mapper device, which in this failure is never created at all.
+  check "crypttab swap has a device timeout" \
+    grep -q '^swap UUID=.*x-systemd\.device-timeout=' "$MNT/etc/crypttab.initramfs"
   got=$(stat -c '%a' "$MNT$SWAPKEY" 2>/dev/null || true)
   checkv "swap keyfile mode" "0" "$got"
   # The resume hook belongs to the busybox path; systemd-hibernate-resume-generator
