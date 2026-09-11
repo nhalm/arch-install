@@ -9,8 +9,20 @@ linux 7.2.4-arch1-2. Four failure modes were induced, each confirmed
 **not to boot** (or to boot **wrong**), then recovered. Nothing here is
 paper-only; anything not executed is marked **UNTESTED**.
 
+> [!WARNING]
+> **Re-verification pending for the three-partition layout.** Every procedure
+> below was executed against the two-partition layout that predates the
+> hibernation swap. The addition of `/dev/vda3`, a second keyfile, and `resume=`
+> on the kernel command line changes the environment each recovery runs in, and
+> those runs have **not** been redone yet. `test/TESTPLAN.md` §Tier 3 tracks
+> which scenarios still need re-proving and what specifically changes in each.
+> Two are known to need edits rather than just a re-run: §4 must restore *both*
+> keyfiles, and §5 must reproduce `resume=` and `zswap.enabled=1` rather than
+> only the root line. Treat the rest as sound in outline and unconfirmed in
+> detail until that work lands.
+
 Replace `vmtestluks` with your passphrase and `/dev/vda` with your disk
-(`/dev/nvme0n1` → partitions are `p1`/`p2`).
+(`/dev/nvme0n1` → partitions are `p1`/`p2`/`p3`).
 
 ---
 
@@ -19,7 +31,28 @@ Replace `vmtestluks` with your passphrase and `/dev/vda` with your disk
 ```
 /dev/vda1  ESP, vfat, mounted at /efi          <- GRUB core image + stamp file
 /dev/vda2  LUKS2 -> /dev/mapper/root, btrfs
+/dev/vda3  LUKS2 -> /dev/mapper/swap, raw swap <- hibernation image lives here
 ```
+
+**Three partitions, not two.** `vda3` is a second, independently-keyed LUKS2
+container holding swap sized for a hibernation image. Four things follow that
+matter during a recovery:
+
+* **It is not needed to boot.** Nothing in the boot path depends on it. A
+  damaged or missing swap container gives you a machine with no swap and no
+  hibernate, which still boots — degraded, not dead. Do not let it distract you
+  from a root-filesystem problem.
+* **It has its own keyfile**, `/etc/cryptsetup-keys.d/swap.key`, which lives
+  *inside the root filesystem*. So restoring a destroyed initramfs means
+  restoring **both** keyfiles; miss the swap one and hibernation silently stops
+  working while everything else looks fine.
+* **The passphrase opens it too.** The keyfile is slot 0 and the passphrase is
+  slot 1, so from the ISO `cryptsetup open /dev/vda3 swap` prompts and works
+  exactly like the root container. You do not need the keyfile to rescue it.
+* **Never run `mkswap` on it while an image is live.** That is the difference
+  between "resume restored my session" and "the machine booted fresh and the
+  session is gone". The same hazard is why `crypttab.initramfs` must not carry
+  the `swap` option — see the comment there.
 
 Inside the btrfs, from subvolid 5:
 
