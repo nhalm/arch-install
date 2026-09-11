@@ -697,7 +697,18 @@ write_fstab() {
   # Swap is not active during the install, so genfstab emits nothing for it.
   # /dev/mapper/swap rather than UUID= to match root= and resume=, and because
   # crypttab.initramfs fixes the mapper name anyway.
-  printf '%s\tnone\tswap\tdefaults\t0 0\n' "$SWAPDEV" >>"$MNT/etc/fstab"
+  #
+  # nofail is load-bearing, not decoration. Without it a swap container that
+  # cannot be unlocked -- damaged LUKS header, wrong keyfile after a partial
+  # restore -- blocks the boot for the full 90 s device timeout before giving
+  # up. Measured: 196 s to a login prompt instead of ~100 s, most of it spent on
+  # "A start job is running for /dev/mapper/swap", which reads exactly like a
+  # hung machine and invites a power cycle at the worst possible moment. With
+  # nofail the swap unit stops being a boot blocker and the machine comes up
+  # promptly with no swap and no hibernate, which is the correct degradation.
+  # Resume is unaffected: it happens in the initramfs from crypttab.initramfs
+  # and resume=, never from fstab.
+  printf '%s\tnone\tswap\tdefaults,nofail\t0 0\n' "$SWAPDEV" >>"$MNT/etc/fstab"
   cat "$MNT/etc/fstab"
 }
 
@@ -899,6 +910,10 @@ verify() {
   fi
   got=$(awk '$3=="swap"{print $1}' "$fstab")
   checkv "fstab swap entry" "$SWAPDEV" "$got"
+  # Without nofail an unopenable swap container costs 90 s of boot time looking
+  # exactly like a hang. See the comment in write_fstab().
+  got=$(awk '$3=="swap"{print $4}' "$fstab" | tr ',' '\n' | grep -cx nofail || true)
+  checkv "fstab swap has nofail" "1" "$got"
   check "crypttab swap entry" grep -q "^swap UUID=.* $SWAPKEY " "$MNT/etc/crypttab.initramfs"
   # The single word `swap` in the options field would make
   # systemd-cryptsetup-generator add ExecStartPost=systemd-makefs, reformatting

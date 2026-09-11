@@ -135,7 +135,7 @@ genuinely fails, recover it, then `verify`.
 | 3.3 | §4 destroyed kernel/initramfs | Restoring the initramfs must restore **both** keyfiles, or swap fails to attach and resume silently stops working. | not run |
 | 3.4 | §5 corrupt `grub.cfg` | Regenerating must reproduce `resume=` and `zswap.enabled=1`, not just the root line. | not run |
 | 3.5 | §6 `rootflags=subvol=` reintroduced | `verify` must still catch it, and must not be confused by the new cmdline entries. | not run |
-| 3.6 | **new** — swap container header damaged | Machine should boot with no swap and no hibernate, degrading rather than failing. Recovery is `luksHeaderRestore` or re-`mkswap`. | not run |
+| 3.6 | **new** — swap container header damaged | **pass, after a fix.** Boots with root intact, swap absent, `/sys/power/resume` `0:0`. But without `nofail` it first stalls the full 90 s device timeout — 196 s to a login prompt, looking exactly like a hang. `nofail` added to the fstab swap entry, with an invariant. | **pass** |
 | 3.7 | **new** — hibernate, then roll back, then resume | See below. | not run |
 
 ### 3.7 is the genuinely new hazard
