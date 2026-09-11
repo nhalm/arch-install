@@ -1129,7 +1129,17 @@ verify() {
 
   if [[ -z $MNT ]]; then
     # Runtime-only: meaningless against a chroot.
-    checkv "zswap active" "Y" "$(cat /sys/module/zswap/parameters/enabled 2>/dev/null || true)"
+    #
+    # verify otherwise reads grub.cfg on disk and never /proc/cmdline, so a
+    # kernel ALREADY RUNNING under a stale pin is invisible to it the moment the
+    # on-disk file is repaired -- which grub-boot-sync.service does automatically
+    # on the next boot. Observed: a machine booted with rootflags=subvol= in
+    # force while verify reported all invariants hold, because the file had just
+    # been healed underneath it. Harmless in that case (the pin matched the
+    # default), but it is exactly the state this design cannot tolerate, and the
+    # on-disk check cannot see it.
+    got=$(tr ' ' '\n' </proc/cmdline | grep -c '^rootflags=.*subvol' || true)
+    checkv "running kernel has no root pin on its cmdline" "0" "$got"
     checkv "zswap compressor" "zstd" "$(cat /sys/module/zswap/parameters/compressor 2>/dev/null || true)"
     check "no zram block device" test ! -e /sys/block/zram0
     got=$(swapon --noheadings --show=NAME 2>/dev/null | wc -l)

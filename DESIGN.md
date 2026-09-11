@@ -74,7 +74,24 @@ The two that look like they should help cannot:
 * The kernel-path check passes as well: `grub-mkconfig` emits the path correctly
   and only *adds* the `rootflags=` token.
 
-That is why the pattern is matched broadly rather than as the literal
+Rebooting does not deepen the net either, which is sharper than it first looks.
+`grub-mkconfig` pins whatever subvolume is *currently mounted*, so pin == default
+from the moment the mistake is made and stays that way across reboots. The other
+checks have nothing to catch until the default actually **moves** — and the
+window before it moves is precisely the window in which the mistake is sitting
+there silently waiting to eat the next rollback. Verified by breaking it,
+rebooting, and confirming only the one check fires; and by then moving the
+default by hand, after which `verify` returns nine failures and the net is
+genuinely deep.
+
+`verify` also now reads `/proc/cmdline`, not only `grub.cfg`. Observed during
+that test: a machine running with `rootflags=subvol=` in force while `verify`
+reported all invariants hold, because `grub-boot-sync.service` had repaired the
+on-disk file during that same boot. Harmless there — the pin matched the default
+— but a file-only check cannot see a stale pin a running kernel is already
+obeying.
+
+That is also why the pattern is matched broadly rather than as the literal
 `rootflags=subvol=` that `10_linux` emits today. `subvolid=` pins just as hard,
 and a pattern that missed it would let `verify` print "all invariants hold" on a
 machine where every future rollback silently does nothing. If this check is ever
