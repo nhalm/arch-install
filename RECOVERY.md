@@ -38,10 +38,17 @@ Replace `vmtestluks` with your passphrase and `/dev/vda` with your disk
 container holding swap sized for a hibernation image. Four things follow that
 matter during a recovery:
 
-* **It is not needed to boot.** Nothing in the boot path depends on it. A
-  damaged or missing swap container gives you a machine with no swap and no
-  hibernate, which still boots — degraded, not dead. Do not let it distract you
-  from a root-filesystem problem.
+* **It does not stop the machine booting, but it does delay it.** A damaged or
+  missing swap container gives you a machine with no swap and no hibernate,
+  which still boots — degraded, not dead. Do not let it distract you from a
+  root-filesystem problem. But expect the boot to be slow and to *look* hung:
+  `resume=` makes `systemd-hibernate-resume.service` depend on the swap device
+  from inside the initramfs, ordered before the root filesystem is mounted, so
+  a device that never appears is waited on with `A start job is running for
+  /dev/mapper/swap` on screen. `resumeflags=x-systemd.device-timeout=10s` on
+  the kernel command line bounds that wait, and `nofail` on the fstab entry
+  bounds the second, host-side one. If a rescued machine boots slowly with that
+  message, the swap container is the cause — not the root filesystem.
 * **It has its own keyfile**, `/etc/cryptsetup-keys.d/swap.key`, which lives
   *inside the root filesystem*. So restoring a destroyed initramfs means
   restoring **both** keyfiles; miss the swap one and hibernation silently stops

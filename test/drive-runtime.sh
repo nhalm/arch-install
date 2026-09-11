@@ -12,7 +12,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VMTEST="$HERE/vmtest.sh"
-LOG="$HERE/serial.log"
+LOG="${VM:-$HERE}/serial.log"
 # --resumed: the machine is expected to come back from a hibernation image, so
 # there is no login prompt -- the restored session is already logged in. Waiting
 # for "login:" in that case hangs forever, which is itself a decent proof that
@@ -49,7 +49,7 @@ say "booting the installed disk"
 say "waiting for GRUB's passphrase prompt"
 start=$(date +%s)
 until grep -aq 'Enter passphrase for' "$LOG" 2>/dev/null; do
-  if ! pgrep -f qemu-system >/dev/null; then echo "qemu died before GRUB" >&2; exit 125; fi
+  if ! kill -0 "$(cat "${VM:-$HERE}/vm.pid" 2>/dev/null || echo 0)" 2>/dev/null; then echo "qemu died before GRUB" >&2; exit 125; fi
   if [ $(( $(date +%s) - start )) -ge 180 ]; then
     echo "no GRUB passphrase prompt within 180s" >&2
     tail -20 "$LOG" | tr -d '\r' >&2; exit 124
@@ -125,7 +125,7 @@ fi
 say "running $SCRIPT in the guest"
 start=$(date +%s)
 until grep -aqE '===(RUNTIME|HIBERNATE-TEST|ROLLBACK-TEST|GUEST)-DONE rc=[0-9]+===' "$LOG" 2>/dev/null; do
-  if ! pgrep -f qemu-system >/dev/null; then
+  if ! kill -0 "$(cat "${VM:-$HERE}/vm.pid" 2>/dev/null || echo 0)" 2>/dev/null; then
     say "qemu exited (expected if the guest hibernated or powered off)"
     exit 0
   fi

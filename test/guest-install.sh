@@ -36,6 +36,15 @@ lsblk -o NAME,SIZE,TYPE,FSTYPE,PARTLABEL "$DISK"
 # answered with `vmtest.sh key`, not by this.
 echo "=== enabling serial console on the installed system (test only) ==="
 MOPTS=rw,relatime,compress=zstd:3,ssd,discard=async,space_cache=v2
+# `arch-install.sh verify` opens the LUKS containers via verify_mount() and does
+# NOT close them when it finishes, so by the time we get here /dev/mapper/root
+# may already exist and be mounted. cryptsetup then exits 5 ("device busy") and
+# `set -e` kills this script silently -- leaving an installed system with no
+# serial console, which looks identical to a broken install when you try to
+# drive it. Start from a known state instead of assuming one.
+umount -R /mnt 2>/dev/null || true
+cryptsetup close swap 2>/dev/null || true
+cryptsetup close root 2>/dev/null || true
 printf '%s' "$LUKS_PASSPHRASE" | cryptsetup open --key-file - "${DISK}2" root
 d=$(mount -o "$MOPTS,subvolid=5" /dev/mapper/root /mnt && \
     btrfs subvolume get-default /mnt | awk '{print $NF}')

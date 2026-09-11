@@ -200,7 +200,14 @@ pbkdf_args() {
         --pbkdf-force-iterations "$LUKS_PBKDF_ITERATIONS"
         --pbkdf-parallel "$LUKS_PBKDF_PARALLEL")
   fi
-  printf '%s\n' "${a[@]}"
+  # Guard the printf: with both LUKS_PBKDF_* set empty -- the documented way to
+  # opt out, which is why the [[ -n ]] tests above exist -- the array is empty
+  # and `printf '%s\n' "${a[@]}"` still runs the format once, emitting a bare
+  # newline. mapfile turns that into a one-element array holding "", which
+  # cryptsetup then takes as a positional argument and luksFormat fails on a
+  # confusing "wrong number of arguments" rather than anything pointing here.
+  (( ${#a[@]} )) && printf '%s\n' "${a[@]}"
+  return 0
 }
 
 luks() {
@@ -604,7 +611,7 @@ GRUB_DEFAULT=0
 GRUB_TIMEOUT=3
 GRUB_TIMEOUT_STYLE=menu
 GRUB_DISTRIBUTOR="Arch"
-GRUB_CMDLINE_LINUX_DEFAULT="rootfstype=btrfs zswap.enabled=1 resume=/dev/mapper/swap"
+GRUB_CMDLINE_LINUX_DEFAULT="rootfstype=btrfs zswap.enabled=1 resume=/dev/mapper/swap resumeflags=x-systemd.device-timeout=10s"
 GRUB_CMDLINE_LINUX=""
 GRUB_PRELOAD_MODULES="part_gpt"
 GRUB_ENABLE_CRYPTODISK=y
@@ -701,13 +708,22 @@ write_fstab() {
   # nofail is load-bearing, not decoration. Without it a swap container that
   # cannot be unlocked -- damaged LUKS header, wrong keyfile after a partial
   # restore -- blocks the boot for the full 90 s device timeout before giving
-  # up. Measured: 196 s to a login prompt instead of ~100 s, most of it spent on
-  # "A start job is running for /dev/mapper/swap", which reads exactly like a
-  # hung machine and invites a power cycle at the worst possible moment. With
-  # nofail the swap unit stops being a boot blocker and the machine comes up
-  # promptly with no swap and no hibernate, which is the correct degradation.
-  # Resume is unaffected: it happens in the initramfs from crypttab.initramfs
-  # and resume=, never from fstab.
+  # up, showing "A start job is running for /dev/mapper/swap" the whole time,
+  # which reads exactly like a hung machine and invites a power cycle at the
+  # worst possible moment. Measured: 196 s to a login prompt instead of ~100 s.
+  #
+  # nofail removes the HOST-side stall only. There is a second one in the
+  # initramfs that nofail cannot reach: resume= makes
+  # systemd-hibernate-resume-generator emit BindsTo=dev-mapper-swap.device on
+  # systemd-hibernate-resume.service, which is ordered Before=local-fs-pre.target
+  # -- so a swap device that never appears is waited on before the root
+  # filesystem is even mounted. That is what the residual ~100 s was.
+  # resumeflags=x-systemd.device-timeout=10s in GRUB_CMDLINE_LINUX_DEFAULT bounds
+  # it. Note resumeflags= inherits rootflags= when unset, and grub-sync strips
+  # rootflags=subvol= entirely, so nothing is inherited and it must be explicit.
+  #
+  # Resume itself is unaffected by fstab: it happens in the initramfs from
+  # crypttab.initramfs and resume=, never from fstab.
   printf '%s\tnone\tswap\tdefaults,nofail\t0 0\n' "$SWAPDEV" >>"$MNT/etc/fstab"
   cat "$MNT/etc/fstab"
 }
@@ -900,6 +916,11 @@ verify() {
   check "no zram-generator.conf" test ! -e "$MNT/etc/systemd/zram-generator.conf"
   check "zswap enabled on cmdline" grep -q 'zswap\.enabled=1' "$MNT/etc/default/grub"
   check "resume= on cmdline" grep -q "resume=$SWAPDEV" "$MNT/etc/default/grub"
+  # Bounds the initrd-side wait on the swap device. Without it an unopenable
+  # swap container stalls the boot ~90 s BEFORE the root filesystem is mounted,
+  # where nofail cannot help. See the comment in write_fstab().
+  check "resumeflags device timeout" \
+    grep -q 'resumeflags=x-systemd\.device-timeout=' "$MNT/etc/default/grub"
   # 10_linux emits `rw` unconditionally; a second one in the variable duplicates it
   got=$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' "$MNT/etc/default/grub" |
         tr ' ' '\n' | grep -cx rw || true)
