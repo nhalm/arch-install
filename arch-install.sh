@@ -336,12 +336,19 @@ configure() {
     printf 'HOSTNAME=%q\nUSERNAME=%q\nTZ=%q\nLOCALE=%q\nKEYMAP=%q\nKEYFILE=%q\nSWAPKEY=%q\n' \
       "$HOSTNAME" "$USERNAME" "$TZ" "$LOCALE" "$KEYMAP" "$KEYFILE" "$SWAPKEY"
     cat <<'CHROOT_BODY'
+# Every assertion below must say what failed. A bare `grep -q` under `set -e`
+# exits silently, which turns a one-line mistake into an install that stops
+# dead with no output at all -- verified the hard way.
+die() { echo "==> ERROR: chroot: $*" >&2; exit 1; }
+
 ln -sf /usr/share/zoneinfo/"$TZ" /etc/localtime
 hwclock --systohc
 sed -i "s/^#${LOCALE} UTF-8/${LOCALE} UTF-8/" /etc/locale.gen
 # locale-gen exits 0 having generated nothing if the sed above matched nothing,
-# so a typo in LOCALE would fail silently.
-grep -qx "${LOCALE} UTF-8" /etc/locale.gen
+# so a typo in LOCALE would otherwise fail silently. Anchored at the start only:
+# glibc's locale.gen pads these lines with trailing spaces, so -x never matches.
+grep -q "^${LOCALE} UTF-8" /etc/locale.gen ||
+  die "$LOCALE is not enabled in /etc/locale.gen (typo in LOCALE?)"
 locale-gen
 echo "LANG=$LOCALE"   > /etc/locale.conf
 echo "KEYMAP=$KEYMAP" > /etc/vconsole.conf
@@ -360,8 +367,10 @@ sed -i "s|^FILES=.*|FILES=($KEYFILE $SWAPKEY)|" /etc/mkinitcpio.conf
 # off the cmdline and emits systemd-hibernate-resume.service bound to the swap
 # device. The 'resume' hook belongs to the busybox/udev path this does not use.
 sed -i 's/^HOOKS=.*/HOOKS=(base systemd keyboard autodetect microcode modconf kms sd-vconsole block sd-encrypt filesystems fsck)/' /etc/mkinitcpio.conf
-grep -q '^HOOKS=(base systemd keyboard' /etc/mkinitcpio.conf
-grep -q "^FILES=($KEYFILE $SWAPKEY)" /etc/mkinitcpio.conf
+grep -q '^HOOKS=(base systemd keyboard' /etc/mkinitcpio.conf ||
+  die "HOOKS= line was not rewritten in /etc/mkinitcpio.conf"
+grep -q "^FILES=($KEYFILE $SWAPKEY)" /etc/mkinitcpio.conf ||
+  die "FILES= does not list both keyfiles; swap would not unlock in the initramfs"
 mkinitcpio -P
 # The linux package's preset builds only 'default' on this release, but the
 # fallback menu entry points at initramfs-linux-fallback.img. Build it the way
@@ -402,7 +411,8 @@ systemctl mask   passim.service
 id -u "$USERNAME" >/dev/null 2>&1 || useradd -m -G wheel "$USERNAME"
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL$/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 visudo -c >/dev/null
-grep -q '^%wheel ALL=(ALL:ALL) ALL$' /etc/sudoers
+grep -q '^%wheel ALL=(ALL:ALL) ALL$' /etc/sudoers ||
+  die "wheel sudo line not enabled; $USERNAME would have no way to escalate"
 grep -q '^PRUNENAMES.*\.snapshots' /etc/updatedb.conf 2>/dev/null ||
   echo 'PRUNENAMES = ".snapshots"' >> /etc/updatedb.conf
 CHROOT_BODY
@@ -820,7 +830,7 @@ verify() {
   got=$(stat -c '%a' "$MNT$KEYFILE" 2>/dev/null || true)
   checkv "keyfile mode" "0" "$got"
   check "crypttab.initramfs" grep -q "^root UUID=.* $KEYFILE " "$MNT/etc/crypttab.initramfs"
-  check "mkinitcpio FILES=" grep -qx "FILES=($KEYFILE)" "$MNT/etc/mkinitcpio.conf"
+  check "mkinitcpio FILES=" grep -qx "FILES=($KEYFILE $SWAPKEY)" "$MNT/etc/mkinitcpio.conf"
   check "keyfile in initramfs" target \
     bash -c "lsinitcpio /boot/initramfs-linux.img | grep -q cryptsetup-keys.d/root.key"
 
@@ -902,8 +912,6 @@ verify() {
   checkv "swap keyfile mode" "0" "$got"
   check "swap keyfile in initramfs" target \
     bash -c "lsinitcpio /boot/initramfs-linux.img | grep -q cryptsetup-keys.d/swap.key"
-  check "mkinitcpio FILES= has both keyfiles" \
-    grep -qx "FILES=($KEYFILE $SWAPKEY)" "$MNT/etc/mkinitcpio.conf"
   # The resume hook belongs to the busybox path; systemd-hibernate-resume-generator
   # does this job here. Its presence would mean someone cargo-culted it in.
   got=$(grep -E '^HOOKS=' "$MNT/etc/mkinitcpio.conf" | tr ' ()' '\n\n\n' | grep -cx resume || true)
@@ -1005,8 +1013,11 @@ verify() {
   # The benchmark on a modern CPU lands around 21 at 512 MiB, which costs ~10 s
   # in GRUB's scalar single-threaded argon2 instead of ~2 s.
   if [[ -n $LUKS_PBKDF_ITERATIONS ]]; then
-    got=$(awk '/^[[:space:]]*0: luks2/,/^[[:space:]]*[0-9]+: luks2|^Tokens:/' <<<"$dump" |
-          awk '/Time cost:/{print $3; exit}')
+    # Not an awk range: `0: luks2` matches the end pattern too, which collapses
+    # the range to a single line and silently yields nothing.
+    got=$(awk '/^[[:space:]]*0: luks2/{f=1; next}
+               f && (/^[[:space:]]*[0-9]+: luks2/ || /^[A-Za-z]/) {exit}
+               f && /Time cost:/ {print $3; exit}' <<<"$dump")
     checkv "LUKS slot 0 argon2 time cost" "$LUKS_PBKDF_ITERATIONS" "$got"
   fi
 
@@ -1031,8 +1042,10 @@ verify() {
     check "no zram block device" test ! -e /sys/block/zram0
     got=$(swapon --noheadings --show=NAME 2>/dev/null | wc -l)
     checkv "exactly one swap area" "1" "$got"
-    got=$(swapon --noheadings --show=NAME 2>/dev/null | head -1)
-    checkv "swap area is the LUKS mapping" "$SWAPDEV" "$got"
+    # swapon reports the resolved device (/dev/dm-0), not the mapper symlink,
+    # so both sides have to be resolved or this can never match.
+    got=$(readlink -f "$(swapon --noheadings --show=NAME 2>/dev/null | head -1)" 2>/dev/null || true)
+    checkv "swap area is the LUKS mapping" "$(readlink -f "$SWAPDEV" 2>/dev/null || echo "$SWAPDEV")" "$got"
     # 0:0 means the kernel has no hibernation target and hibernate would fail.
     got=$(cat /sys/power/resume 2>/dev/null || echo 0:0)
     [[ $got != 0:0 ]] || FAILURES+=("/sys/power/resume is unset; hibernate has no target")

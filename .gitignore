@@ -5,3 +5,8 @@ serial.log
 vm.pid
 http.pid
 www/
+# extracted from the ISO by vmtest.sh for -kernel/-initrd
+vmlinuz-linux
+initramfs-linux.img
+*.sock
+http.log
