@@ -45,7 +45,9 @@ every boot**.
 | Filesystem | btrfs, `compress=zstd:3`, subvolumes for `/home`, `/var/log`, `/var/cache/pacman/pkg`, `/.snapshots` |
 | Boot | GRUB at `EFI/GRUB` and the removable `EFI/BOOT/BOOTX64.EFI`, 3-second menu, `sd-encrypt` initramfs hooks |
 | Snapshots | snapper configs for `root` and `home`, `snap-pac`, timeline and cleanup timers, timeline `Persistent=true` so a laptop catches up after sleep |
-| System | NetworkManager, zram (`min(ram/2, 8192)`, zstd), `wheel` sudo, locked root, `git`, `vim`, man pages |
+| Hibernation | third LUKS2 partition, 40 GiB, `resume=` on the cmdline, second keyfile so there is still one passphrase prompt |
+| Sleep | `suspend-then-hibernate`, hibernate 30 min after suspending, on battery only; lid and power key handled by logind |
+| System | NetworkManager, zswap (zstd), systemd-timesyncd, fstrim/paccache/reflector timers, thermald, power-profiles-daemon, smartd, bluetooth, `sof-firmware`, `wheel` sudo, locked root |
 
 ## Requirements
 
@@ -223,6 +225,7 @@ findmnt -no SOURCE /                 # /dev/mapper/root[/@/.snapshots/14/snapsho
 | `install` (default) | `DISK=/dev/nvme0n1 ./arch-install.sh` | Erases `DISK` and installs |
 | `verify` | `sudo DISK=/dev/nvme0n1 MNT=/ ./arch-install.sh verify` | Read-only; re-checks every invariant of the layout, prints each failure and exits non-zero |
 | `snapper` | `sudo MNT=/ ./arch-install.sh snapper` | Re-applies the snapper configuration in place, idempotently |
+| `power` | `sudo MNT=/ ./arch-install.sh power` | Re-applies the sleep policy in place; `HIBERNATE_DELAY=45min` to retune without reinstalling |
 
 ## Environment variables
 
@@ -238,6 +241,9 @@ findmnt -no SOURCE /                 # /dev/mapper/root[/@/.snapshots/14/snapsho
 | `LUKS_PASSPHRASE` | prompted |
 | `LUKS_PBKDF_MEMORY` | `524288` (KiB) |
 | `UCODE` | `intel-ucode`; `amd-ucode` on AMD |
+| `SWAP_SIZE_GIB` | `40`. Must be at least `MemTotal * 35/32` — a hibernation image can *expand* — and the installer refuses before touching the disk if it is not |
+| `HIBERNATE_DELAY` | `30min` spent suspended before escalating to hibernate |
+| `LUKS_PBKDF_ITERATIONS` | `4`, forced. With the 512 MiB memory cost this is RFC 9106's first recommended option |
 | `EXTRA_PACKAGES` | `git`, space-separated, appended to `pacstrap` |
 | `TZ` | `US/Central` |
 | `LOCALE` | `en_US.UTF-8` |
@@ -255,6 +261,7 @@ nvme0n1p2      LUKS2 → btrfs
                 @/home/.snapshots
                 @/var/log         →  /var/log
                 @/var/cache/pacman/pkg
+nvme0n1p3  40G  LUKS2 → raw swap, sized for a hibernation image
 ```
 
 The default subvolume is set to a snapshot at install time, so the very first

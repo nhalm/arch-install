@@ -78,13 +78,25 @@ else
 fi
 
 echo "== resume=: armed by the cmdline, and only by the cmdline =="
-run_resumegen "root=/dev/mapper/root rootfstype=btrfs zswap.enabled=1 resume=$SWAPDEV" "$T/with"
+# Feed the cmdline the installer actually writes, resumeflags included. Testing
+# a cmdline that no longer ships is worse than not testing: it passes green
+# while asserting the behaviour of a configuration nobody runs.
+run_resumegen "root=/dev/mapper/root rootfstype=btrfs zswap.enabled=1 resume=$SWAPDEV resumeflags=x-systemd.device-timeout=30s" "$T/with"
 want "hibernate-resume.service pulled into sysinit.target" \
      "$(test -L "$T/with/sysinit.target.wants/systemd-hibernate-resume.service" && echo yes || echo no)" "yes"
 want "resume unit BindsTo dev-mapper-swap.device" \
      "$(grep -rc 'BindsTo=dev-mapper-swap.device' "$T/with" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')" "1"
-want "swap device job timeout is infinite" \
-     "$(grep -rc 'JobTimeoutSec=infinity' "$T/with" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')" "1"
+# JobTimeoutSec=infinity is the DEFAULT for every device unit, so asserting it
+# proved nothing -- and it asserted the unbounded behaviour as desirable, which
+# is the bug it should have caught. The field that actually bounds the wait is
+# JobRunningTimeoutSec, and only resumeflags= sets it.
+want "swap device wait is BOUNDED (not the 90 s default)" \
+     "$(grep -rc 'JobRunningTimeoutSec=30s' "$T/with" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')" "1"
+
+# And prove the bound comes from resumeflags rather than appearing by magic.
+run_resumegen "root=/dev/mapper/root rootfstype=btrfs resume=$SWAPDEV" "$T/noflags"
+want "without resumeflags the wait is unbounded (the bug)" \
+     "$(grep -rc 'JobRunningTimeoutSec=' "$T/noflags" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')" "0"
 
 run_resumegen "root=/dev/mapper/root rootfstype=btrfs" "$T/without"
 want "no resume= means no units at all (hibernate would have no target)" \

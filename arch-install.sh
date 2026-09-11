@@ -140,6 +140,21 @@ preflight() {
   local memkb
   memkb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
   (( memkb >= 3500000 )) || warn "under 4G RAM: cryptsetup may silently weaken argon2id"
+
+  # Refuse a swap that cannot hold the image BEFORE sgdisk --zap-all, not at the
+  # first post-boot verify. The same arithmetic lives in verify(), but that runs
+  # only with MNT empty -- so on a machine with more RAM than SWAP_SIZE_GIB
+  # allows for, the install would complete cleanly, encrypt the whole disk, and
+  # surface the problem when the only remaining fix is a reinstall.
+  if [[ $MODE == install ]]; then
+    local needgib
+    needgib=$(( (memkb * 35 / 32 + 1048575) / 1048576 ))
+    (( SWAP_SIZE_GIB >= needgib )) ||
+      die "SWAP_SIZE_GIB=$SWAP_SIZE_GIB is too small for $(( memkb / 1048576 ))G of RAM:
+    a hibernation image can EXPAND to MemTotal * 35/32 (kernel/power/swap.c
+    bytes_worst_compress), so this machine needs >= ${needgib}G. Set
+    SWAP_SIZE_GIB=$needgib or higher."
+  fi
 }
 
 banner() {
@@ -304,8 +319,12 @@ keyfile() {
   ( umask 377; dd if=/dev/urandom of="$MNT$SWAPKEY" bs=512 count=8 status=none )
   chmod 000 "$MNT$SWAPKEY"
   # Keyfile in slot 0 so the initramfs unlock hits first try; the passphrase is
-  # a recovery slot, so a broken keyfile degrades to a prompt rather than to a
-  # machine with no swap and no resume. pbkdf2/1000 on purpose: the key is 4096
+  # a recovery slot, so a broken keyfile still gets you swap -- cryptsetup falls
+  # back to prompting on the console and the device appears. Note what it does
+  # NOT get you: the resume job is bounded by resumeflags=x-systemd.device-timeout
+  # (see write_fstab), and a human typing a passphrase will usually exceed it, so
+  # that boot comes up with swap and without resume. The hibernation image is not
+  # destroyed by this -- it stays unconsumed in swap. pbkdf2/1000 on purpose: the key is 4096
   # bits of urandom that exists only inside the already-unlocked root container,
   # so KDF hardening buys nothing.
   cryptsetup luksFormat --type luks2 --sector-size 4096 \
@@ -509,7 +528,17 @@ HandleSuspendKey=suspend-then-hibernate
 IdleAction=ignore
 InhibitDelayMaxSec=10
 EOF
-  [[ -n $MNT ]] || systemctl daemon-reload
+  # daemon-reload makes PID 1 re-read UNIT files; it does not make logind re-read
+  # logind.conf.d. Without the reload, `power` mode writes the lid policy,
+  # reports success, and the old policy stays live until the next reboot -- and
+  # the sleep.conf half DOES take effect immediately (systemd-sleep reads it per
+  # invocation), so the half-application is easy to miss. systemd-logind is
+  # Type=notify-reload, so reloading is safe for live sessions.
+  if [[ -z $MNT ]]; then
+    systemctl daemon-reload
+    systemctl reload systemd-logind 2>/dev/null ||
+      warn "could not reload systemd-logind; lid policy applies at next reboot"
+  fi
 }
 
 passwords() {
@@ -611,7 +640,7 @@ GRUB_DEFAULT=0
 GRUB_TIMEOUT=3
 GRUB_TIMEOUT_STYLE=menu
 GRUB_DISTRIBUTOR="Arch"
-GRUB_CMDLINE_LINUX_DEFAULT="rootfstype=btrfs zswap.enabled=1 resume=/dev/mapper/swap resumeflags=x-systemd.device-timeout=10s"
+GRUB_CMDLINE_LINUX_DEFAULT="rootfstype=btrfs zswap.enabled=1 resume=/dev/mapper/swap resumeflags=x-systemd.device-timeout=30s"
 GRUB_CMDLINE_LINUX=""
 GRUB_PRELOAD_MODULES="part_gpt"
 GRUB_ENABLE_CRYPTODISK=y
@@ -718,9 +747,20 @@ write_fstab() {
   # systemd-hibernate-resume.service, which is ordered Before=local-fs-pre.target
   # -- so a swap device that never appears is waited on before the root
   # filesystem is even mounted. That is what the residual ~100 s was.
-  # resumeflags=x-systemd.device-timeout=10s in GRUB_CMDLINE_LINUX_DEFAULT bounds
+  # resumeflags=x-systemd.device-timeout=30s in GRUB_CMDLINE_LINUX_DEFAULT bounds
   # it. Note resumeflags= inherits rootflags= when unset, and grub-sync strips
   # rootflags=subvol= entirely, so nothing is inherited and it must be explicit.
+  #
+  # The budget is for DEVICE ENUMERATION, not the KDF -- the swap keyslot is
+  # pbkdf2/1000 and costs well under a millisecond. 30 s rather than 10 s
+  # because erring short has a worse failure than erring long: a spurious
+  # timeout skips systemd-hibernate-resume, the machine boots fresh, and the
+  # unconsumed image is left sitting in swap. That is intact, not destroyed
+  # (swsusp rewrites page 0's signature to S1SUSPEND so a later swapon fails
+  # rather than overwriting), but it is exactly the input to the untested
+  # hibernate-then-rollback hazard. 30 s also leaves room for a human to type a
+  # passphrase if the swap keyfile is ever unusable and cryptsetup falls back to
+  # prompting.
   #
   # Resume itself is unaffected by fstab: it happens in the initramfs from
   # crypttab.initramfs and resume=, never from fstab.

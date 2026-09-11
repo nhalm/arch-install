@@ -15,6 +15,13 @@ Change any of these and rollback silently stops working.
 | btrfs quotas OFF | `FREE_LIMIT` needs only `statvfs`. snapper 0.13.1 forces a full `quota_rescan` on every cleanup when quotas are on. |
 | `ALLOW_USERS`/`SYNC_ACL` first in the key list | That ordering is what triggers `syncAcl()`. |
 | LUKS keyfile in the initramfs | Without it GRUB and the initramfs each prompt. Keyfile is mode 000 inside the encrypted volume; a broken keyfile degrades to a second prompt, not an unbootable system. |
+| No `swap` option in `crypttab.initramfs` | One word. `systemd-cryptsetup-generator` turns it into `ExecStartPost=systemd-makefs swap`, which reformats the device on every boot and destroys any hibernation image. Proven in `test/generator-test.sh`. |
+| `x-initrd.attach` on the swap crypttab entry | Without it the generated unit gets `Conflicts=umount.target`, because `attach_in_initrd()` special-cases only the names `root` and `usr` — the mapping would be torn down at switch-root. |
+| `nofail` on the fstab swap line | An unopenable swap container otherwise blocks the host boot for the full 90 s device timeout, showing "A start job is running for /dev/mapper/swap" — indistinguishable from a hang, and an invitation to power-cycle. |
+| `resumeflags=x-systemd.device-timeout=` on the cmdline | The second, independent stall. `resume=` makes the hibernate-resume unit `BindsTo` the swap device *inside the initramfs*, ordered before the root filesystem mounts, where `nofail` cannot reach. Budget is for device enumeration, not the KDF (pbkdf2/1000, sub-millisecond). `resumeflags=` inherits `rootflags=` when unset and `grub-sync` strips that entirely, so it must be explicit. |
+| No `resume` hook in `HOOKS` | It belongs to the busybox/udev path. With the `systemd` hook, `systemd-hibernate-resume-generator` reads `resume=` and emits the unit; adding the hook is cargo-culting. |
+| Swap keyslots inverted: keyfile 0, passphrase 1 | Opposite to root, deliberately. The initramfs unlock hits slot 0 first, so it never pays a KDF for a slot it has no key for. |
+| zram dropped for zswap | zram is inert at 32 GB (observed: 4 KB of data against an 8 G ceiling), inverts the LRU next to a real swap area because nothing evicts it, and degrades hibernation *entry* — freeing RAM for the image evicts pages into zram, which is RAM. Fedora concede the last point in their own SwapOnZRAM proposal. zswap compresses in front of the disk and can let go. |
 | The default subvolume is set to a snapshot at install time | `snapper rollback`'s AUTO ambit needs `idToNum()` to parse the default subvolume path, which must end `/<N>/snapshot`; `@` does not. Booting from `@` would make the first rollback need `--ambit=classic`. `first_snapshot()` sets the default to `@/.snapshots/<N>/snapshot`, so every rollback is an ordinary one. |
 
 ## Re-applying
@@ -27,12 +34,19 @@ the state at install time. `create-config` is skipped when the config exists.
 
 ## Cost
 
-GRUB runs argon2id single-threaded in EFI: **~10 s of silent decrypt at every boot**,
-measured on the target laptop. cryptsetup calibrates to 2 s using 4 threads and SIMD;
-GRUB's argon2 is scalar C walking lanes sequentially.
+GRUB runs argon2id single-threaded in EFI. Left at the benchmarked cost that was
+**~10 s of silent decrypt at every boot**, measured on the target laptop:
+cryptsetup calibrates to 2 s using 4 threads and SIMD, and GRUB's argon2 is
+scalar C walking lanes sequentially. With the forced iteration count below it is
+**~2 s** — modelled from that measurement, not yet stopwatched on hardware.
 
-The installer does not pin `--pbkdf-force-iterations`, so a machine that benchmarks
-faster will pick a higher iteration count and pay proportionally more.
+The installer now pins `--pbkdf-force-iterations 4` with `--pbkdf-memory 524288`
+and `--pbkdf-parallel 4`, which is exactly RFC 9106's first recommended option.
+Left to benchmark, `cryptsetup` calibrates to a 2 s target using every thread and
+SIMD, and GRUB — scalar, single-threaded — pays about 5x that. Lowering the
+memory alone does nothing: the benchmark raises the iteration count to hit the
+same target, so you get identical wall time with less memory-hardness. All three
+parameters must be passed together or the benchmark runs anyway.
 
 ## Rejected
 
