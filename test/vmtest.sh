@@ -249,6 +249,30 @@ s.close()
 PY
 }
 
+# Capture the graphical console. GRUB sets no GRUB_TERMINAL_OUTPUT, so its
+# output goes to gfxterm and never reaches the serial port -- the LUKS prompt
+# appears on serial only because it is printed before terminal setup. That makes
+# a failed boot look like a healthy log that simply stops, and any grep for GRUB
+# error text finds nothing. This is the only way to read those errors.
+cmd_shot() {
+	local out="${1:-$VM/screen.png}"
+	[ -S "$QMP" ] || die "no qmp socket; is the vm running?"
+	python3 - "$QMP" "$out" <<'PY'
+import json, socket, sys
+sock, out = sys.argv[1], sys.argv[2]
+s = socket.socket(socket.AF_UNIX); s.connect(sock)
+f = s.makefile("rw")
+f.readline()
+f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n"); f.flush(); f.readline()
+f.write(json.dumps({"execute": "screendump",
+                    "arguments": {"filename": out, "format": "png"}}) + "\n")
+f.flush()
+print(f.readline().strip())
+s.close()
+PY
+	echo "screendump: $out"
+}
+
 cmd_serve() { mkdir -p "$WWW"; exec python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$WWW"; }
 
 cmd_log() { tail -n "${1:-40}" "$LOG"; }
@@ -274,6 +298,7 @@ wait) shift; cmd_wait "$@" ;;
 send) shift; cmd_send "$@" ;;
 key) shift; cmd_key "$@" ;;
 serve) shift; cmd_serve "$@" ;;
+shot) shift; cmd_shot "$@" ;;
 cycle) shift; cmd_cycle "$@" ;;
 stop) shift; stop; echo "stopped" ;;
 log) shift; cmd_log "$@" ;;
@@ -288,6 +313,7 @@ usage: vmtest.sh <cmd>
   send <text>        type a line into the serial console
   key [--no-enter] <text>  type on the emulated keyboard via QMP (reaches GRUB)
   serve              foreground http server for $WWW
+  shot [file]        PNG of the graphical console (the only way to read GRUB errors)
   stop | log [n] | info | extract
 USAGE
 exit 1 ;;

@@ -74,6 +74,11 @@ done
 echo "  booted after break: $booted  ($why; expected: no)"
 echo "  --- what it said ---"
 sed 's/\x1b\[[0-9;]*m//g' "$LOG" | tr -d '\r' | grep -aiE 'error|emergency|rescue|magic|failed|cannot|Entering' | tail -6
+# GRUB writes to gfxterm, not serial, so a scenario whose failure IS a GRUB
+# error string finds nothing above and prints an empty evidence block. Grab the
+# screen before tearing the VM down -- it is the only place that text exists.
+"$V" shot "${VM:-$HERE}/screen-postbreak.png" >/dev/null 2>&1 &&
+  echo "  (graphical console captured: ${VM:-$HERE}/screen-postbreak.png)"
 "$V" stop >/dev/null 2>&1; sleep 1
 
 archive postbreak
