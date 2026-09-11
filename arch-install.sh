@@ -752,14 +752,25 @@ write_fstab() {
   # which reads exactly like a hung machine and invites a power cycle at the
   # worst possible moment. Measured: 196 s to a login prompt instead of ~100 s.
   #
-  # nofail removes the HOST-side stall only. There is a second one in the
-  # initramfs that nofail cannot reach: resume= makes
-  # systemd-hibernate-resume-generator emit BindsTo=dev-mapper-swap.device on
-  # systemd-hibernate-resume.service, which is ordered Before=local-fs-pre.target
-  # -- so a swap device that never appears is waited on before the root
-  # filesystem is even mounted. That is what the residual ~100 s was.
-  # resumeflags=x-systemd.device-timeout=30s in GRUB_CMDLINE_LINUX_DEFAULT bounds
-  # it. Note resumeflags= inherits rootflags= when unset, and grub-sync strips
+  # There are THREE independent waits on the swap chain, each with its own 90 s
+  # default, and each needs bounding separately. Measured with a destroyed LUKS
+  # header, against a 14 s healthy boot:
+  #
+  #   1. the underlying partition's by-uuid symlink, waited on by
+  #      systemd-cryptsetup@swap from crypttab. Bounded by
+  #      x-systemd.device-timeout in the CRYPTTAB options. 192 s -> 113 s.
+  #   2. /dev/mapper/swap in the INITRAMFS, waited on by
+  #      systemd-hibernate-resume.service, which BindsTo it and is ordered
+  #      Before=local-fs-pre.target -- i.e. before the root filesystem mounts,
+  #      where nofail cannot reach. Bounded by resumeflags= on the cmdline.
+  #   3. /dev/mapper/swap in the HOST system, from this fstab entry. nofail
+  #      stops the swap unit blocking its target but does NOT bound the device
+  #      job, which keeps the 90 s default. Bounded by x-systemd.device-timeout
+  #      here.
+  #
+  # The serial log shows 2 and 3 as the same device with two different budgets
+  # ("(9s / 30s)" and "(9s / 1min 30s)"), which is what gave the third one away.
+  # Note resumeflags= inherits rootflags= when unset, and grub-sync strips
   # rootflags=subvol= entirely, so nothing is inherited and it must be explicit.
   #
   # The budget is for DEVICE ENUMERATION, not the KDF -- the swap keyslot is
@@ -775,7 +786,8 @@ write_fstab() {
   #
   # Resume itself is unaffected by fstab: it happens in the initramfs from
   # crypttab.initramfs and resume=, never from fstab.
-  printf '%s\tnone\tswap\tdefaults,nofail\t0 0\n' "$SWAPDEV" >>"$MNT/etc/fstab"
+  printf '%s\tnone\tswap\tdefaults,nofail,x-systemd.device-timeout=10s\t0 0\n' \
+    "$SWAPDEV" >>"$MNT/etc/fstab"
   cat "$MNT/etc/fstab"
 }
 
@@ -1007,6 +1019,10 @@ verify() {
   # exactly like a hang. See the comment in write_fstab().
   got=$(awk '$3=="swap"{print $4}' "$fstab" | tr ',' '\n' | grep -cx nofail || true)
   checkv "fstab swap has nofail" "1" "$got"
+  # nofail alone leaves the device job at the 90 s default. Third of the three
+  # waits; see the comment in write_fstab().
+  got=$(awk '$3=="swap"{print $4}' "$fstab" | tr ',' '\n' | grep -c '^x-systemd\.device-timeout=' || true)
+  checkv "fstab swap has a device timeout" "1" "$got"
   check "crypttab swap entry" grep -q "^swap UUID=.* $SWAPKEY " "$MNT/etc/crypttab.initramfs"
   # The single word `swap` in the options field would make
   # systemd-cryptsetup-generator add ExecStartPost=systemd-makefs, reformatting
