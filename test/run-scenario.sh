@@ -32,7 +32,7 @@ say "SCENARIO $N: breaking the system"
 # guest script. A scenario that times out here looks identical to a scenario
 # whose break hung the machine, which is the one distinction this test exists
 # to make.
-"$HERE/drive-runtime.sh" "t${N}-break.sh" 600 >/tmp/s${N}b.out 2>&1
+"$HERE/drive-runtime.sh" "t${N}-break.sh" 600 >"${VM:-$HERE}/break-driver.log" 2>&1
 sed 's/\x1b\[[0-9;]*m//g' "$LOG" | tr -d '\r' | sed -n "/T${N}-BREAK/,/T${N}-BREAK-END/p"
 
 if [ "$MODE" = breakonly ]; then
@@ -105,6 +105,10 @@ echo "  booted after rescue: $booted  ($why; expected: yes)"
 [ "$booted" = yes ] || exit 1
 archive final
 echo "phase logs: ${VM:-$HERE}/serial-{break,postbreak,rescue,final}.log"
+# Every run artefact lives under $VM so parallel-setup.sh wiping the directory
+# takes the stale output with it. A log in /tmp outlives its VM and silently
+# describes a machine that no longer exists.
+echo "driver log: ${VM:-$HERE}/break-driver.log"
 # Leave nothing running: five parallel scenarios each holding a 4 GB VM at a
 # login prompt is a lot of abandoned host memory, and a stray VM is what caused
 # the cross-scenario interference this harness already had to be fixed for.

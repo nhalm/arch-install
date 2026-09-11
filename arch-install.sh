@@ -824,7 +824,23 @@ verify() {
   check "grub.cfg exists" test -s "$cfg"
   if [[ -s $cfg ]]; then
     grep -q 'cryptomount -u [0-9a-fA-F-]\{32,\}' "$cfg" || FAILURES+=("grub.cfg has no cryptomount")
-    grep -q 'rootflags=subvol=' "$cfg" && FAILURES+=("grub.cfg has rootflags=subvol=")
+    # LOAD-BEARING AND ALONE. Verified in a VM: of the checks that could in
+    # principle catch a reintroduced root pin, only this one actually fires.
+    # "root mounted on the default subvolume" reads live kernel and filesystem
+    # state and never looks at grub.cfg -- and at the moment the pin is written
+    # it is guaranteed to agree, because grub-mkconfig pins whatever subvolume
+    # is currently mounted. It diverges only after a rollback has moved the
+    # default and the machine has rebooted onto the stale pin, i.e. after the
+    # damage. The kernel-path check passes too, since grub-mkconfig emits the
+    # path correctly and only ADDS the token.
+    #
+    # So this grep is the whole net at the one moment the mistake is cheap to
+    # fix. Matched broadly on purpose: `subvol=` is what 10_linux emits today,
+    # but `subvolid=` pins just as hard and a pattern that missed it would let
+    # verify report "all invariants hold" on a system where every future
+    # rollback silently does nothing.
+    grep -qE 'rootflags=[^ ]*subvol' "$cfg" &&
+      FAILURES+=("grub.cfg has a rootflags= root pin (rollback would silently do nothing)")
     grep -q 'root=/dev/mapper/root' "$cfg" || FAILURES+=("grub.cfg lacks root=/dev/mapper/root")
     grep -q "linux[[:space:]]*/$dflt/boot/vmlinuz-linux" "$cfg" ||
       FAILURES+=("grub.cfg kernel path is not inside $dflt")

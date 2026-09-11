@@ -41,3 +41,28 @@ faster will pick a higher iteration count and pay proportionally more.
 `set-default`, no `--pbkdf-memory`, busybox hooks forced when no HSM is chosen
 (`installer.py:857`), no root keyfile. `custom_commands` cannot compensate — it runs
 chrooted and before `genfstab()` (`guided.py:181-184`).
+
+## The one check that is alone
+
+`verify`'s `grep -qE 'rootflags=[^ ]*subvol'` against `grub.cfg` is the entire
+safety net for a reintroduced root pin, at the moment when that mistake is still
+cheap to fix. Verified in a VM by breaking the system and counting which checks
+fire: exactly one does.
+
+The two that look like they should help cannot:
+
+* `checkv "root mounted on the default subvolume"` compares `findmnt -no SOURCE /`
+  against the btrfs default. Both read live kernel and filesystem state; neither
+  reads `grub.cfg`. And at the moment the pin is written it is *guaranteed* to
+  agree, because `grub-mkconfig` pins whatever subvolume is currently mounted.
+  It diverges only after a rollback has moved the default and the machine has
+  rebooted onto the stale pin — after the damage.
+* The kernel-path check passes as well: `grub-mkconfig` emits the path correctly
+  and only *adds* the `rootflags=` token.
+
+That is why the pattern is matched broadly rather than as the literal
+`rootflags=subvol=` that `10_linux` emits today. `subvolid=` pins just as hard,
+and a pattern that missed it would let `verify` print "all invariants hold" on a
+machine where every future rollback silently does nothing. If this check is ever
+edited, it is the last thing standing between that state and a clean bill of
+health.
