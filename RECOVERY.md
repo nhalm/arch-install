@@ -561,6 +561,23 @@ grep -m1 -E '^[[:space:]]+linux' /mnt/boot/grub/grub.cfg
 #   linux /@/.snapshots/19/snapshot/boot/vmlinuz-linux root=/dev/mapper/root rw ...
 grep -c 'rootflags=subvol=' /mnt/boot/grub/grub.cfg
 #   0                                <- grub-sync stripped it; must be 0
+
+# A config that boots is not the same as a config that is COMPLETE. These three
+# are what a regenerated grub.cfg silently loses without any visible symptom:
+# the machine comes up perfectly and simply cannot hibernate any more, and
+# nobody connects that to a grub.cfg repair done weeks earlier.
+grep -c 'resume=/dev/mapper/swap' /mnt/boot/grub/grub.cfg
+#   3                                <- default entry + both submenu entries
+grep -c 'zswap.enabled=1' /mnt/boot/grub/grub.cfg
+#   3
+grep -c cryptomount /mnt/boot/grub/grub.cfg
+#   4                                <- preamble + one per entry
+
+# And prove /boot really is the one INSIDE the root subvolume, not a stray
+# mount. This layout has no separate /boot; getting it wrong means repairing
+# somebody else's kernel directory and reporting success.
+findmnt -no SOURCE -T /mnt/boot/grub
+#   /dev/mapper/root[/@/.snapshots/19/snapshot]
 ```
 
 **Verified:** boots.
