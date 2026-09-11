@@ -195,3 +195,10 @@ executing them correctly. It is a display artefact of byte-at-a-time writing, no
 a delivery failure. The practical constraint: never parse the echoed command
 text, only marker-framed output the guest itself produces
 (`=====THING=====` … `=====THING-END=====`).
+
+**`vmtest.sh send` expands `$(...)` on the HOST.** The argument goes through the
+host shell before it is typed, so `send "echo $(hostname)"` types the *host's*
+hostname into the guest. A probe written that way returns a host answer wearing
+the guest's clothes — and an empty host result looks exactly like a legitimate
+empty guest result. Single-quote anything the guest must evaluate, or better,
+have the guest fetch and run a script and print marker-framed output.

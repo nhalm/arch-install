@@ -8,7 +8,14 @@
 #
 # Exits non-zero if the break did not break, or the rescue did not fix it.
 set -uo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# bash reads this file incrementally and resumes at a byte offset, so editing it
+# while a run is in flight makes the running instance jump into the middle of a
+# line. Re-exec from a private copy: the original can then be edited freely.
+if [ -z "${SCENARIO_REEXEC:-}" ]; then
+  _c=$(mktemp); cat "$0" >"$_c"; chmod +x "$_c"
+  SCENARIO_REEXEC=1 "$_c" "$@"; _rc=$?; rm -f "$_c"; exit $_rc
+fi
+HERE="${SCENARIO_HOME:-/home/nick/personal/arch-install/test}"
 V="$HERE/vmtest.sh"; LOG="${VM:-$HERE}/serial.log"
 N="${1:?usage: run-scenario.sh <NN> [breakonly]}"; MODE="${2:-full}"
 PASS=vmtestluks; USER=nick; UPASS=vmtestuser
@@ -22,8 +29,24 @@ serve(){ curl -sf --max-time 2 "http://127.0.0.1:8123/rescue-lib.sh" >/dev/null 
   sleep 1; }; }
 down(){ local s=$(date +%s); while kill -0 "$(cat "${VM:-$HERE}/vm.pid" 2>/dev/null || echo 0)" 2>/dev/null; do
   [ $(( $(date +%s)-s )) -gt "${1:-150}" ] && return 1; sleep 3; done; return 0; }
-unlock(){ local s=$(date +%s); until grep -aq 'Enter passphrase for' "$LOG" 2>/dev/null; do
-  [ $(( $(date +%s)-s )) -gt 150 ] && return 1; sleep 2; done; sleep 1; "$V" key "$PASS" >/dev/null 2>&1; }
+# Returning success just because the keystrokes were SENT manufactures false
+# passes: if they are dropped the machine sits at the passphrase prompt, never
+# reaches a login, and the break check reads that as "did not boot" -- which is
+# the expected result. A break that did nothing would score identically to one
+# that worked. Wait for GRUB to say it actually opened the keyslot.
+unlock(){ local s=$(date +%s)
+  until grep -aq 'Enter passphrase for' "$LOG" 2>/dev/null; do
+    [ $(( $(date +%s)-s )) -gt 150 ] && { echo "  no GRUB passphrase prompt" >&2; return 1; }
+    sleep 2
+  done
+  sleep 1; "$V" key "$PASS" >/dev/null 2>&1
+  s=$(date +%s)
+  until grep -aq 'Slot "0" opened' "$LOG" 2>/dev/null; do
+    [ $(( $(date +%s)-s )) -gt 60 ] && {
+      echo "  passphrase sent but never accepted -- keystrokes dropped?" >&2; return 1; }
+    sleep 2
+  done
+  return 0; }
 
 serve
 say "SCENARIO $N: breaking the system"
@@ -42,7 +65,17 @@ fi
 
 archive break
 say "waiting for the guest to go down"
-down 180 || { echo "guest never rebooted"; "$V" stop >/dev/null 2>&1; }
+# A hard kill is not a reboot. Observed: the same corrupt grub.cfg gives
+# "unknown filesystem" + grub rescue> after SIGTERM, versus lexer errors + a
+# bare grub> after a clean reboot -- a §3-shaped diagnosis instead of a
+# §5-shaped one. Whatever the next phase then sees would be attributed to the
+# scenario's break. Abort loudly instead of testing something else.
+down 180 || {
+  echo "FATAL: guest never rebooted after the break; refusing to attribute the" >&2
+  echo "       next boot's symptoms to this scenario. Stopping." >&2
+  "$V" stop >/dev/null 2>&1
+  exit 2
+}
 
 say "SCENARIO $N: does it still boot? (it should NOT)"
 "$V" run >/dev/null 2>&1
