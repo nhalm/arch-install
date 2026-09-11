@@ -16,13 +16,17 @@ LOG="$VM/serial.log"
 SOCK="$VM/serial.sock"
 PIDF="$VM/vm.pid"
 HTTPPID="$VM/http.pid"
+QMP="$VM/qmp.sock"
 
 SIZE="${SIZE:-20G}"
 MEM="${MEM:-4096}"
 CPUS="${CPUS:-4}"
 PORT="${PORT:-8123}"
 TIMEOUT="${TIMEOUT:-1800}"
-SENTINEL_RE='===INSTALL-DONE rc=[0-9]+==='
+# Distinct from arch-install.sh's own ===INSTALL-DONE===: the installer
+# prints that when IT finishes, so a guest script that does anything
+# afterwards would have the VM killed out from under it.
+SENTINEL_RE='===GUEST-DONE rc=[0-9]+==='
 
 die() { echo "vmtest: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || die "missing: $1"; }
@@ -50,7 +54,7 @@ stop() {
 		for _ in $(seq 50); do vm_running || break; sleep 0.1; done
 		vm_running && kill -9 "$(cat "$PIDF")" 2>/dev/null || true
 	fi
-	rm -f "$PIDF" "$SOCK"
+	rm -f "$PIDF" "$SOCK" "$QMP"
 	if [ -f "$HTTPPID" ]; then kill "$(cat "$HTTPPID")" 2>/dev/null || true; rm -f "$HTTPPID"; fi
 }
 
@@ -86,6 +90,12 @@ build_common() {
 		-netdev "user,id=n0" -device virtio-net-pci,netdev=n0
 		-chardev "socket,id=ser0,path=$SOCK,server=on,wait=off,logfile=$LOG,logappend=off"
 		-serial chardev:ser0
+		# QMP is how keystrokes reach GRUB. GRUB_TERMINAL_INPUT=console means
+		# EFI_SIMPLE_TEXT_INPUT -- the graphical console -- so the LUKS
+		# passphrase prompt never appears on the serial port and `send` cannot
+		# answer it. send-key injects at the emulated-keyboard level, which
+		# GRUB does see.
+		-qmp "unix:$QMP,server=on,wait=off"
 		-display none -monitor none -no-reboot
 	)
 }
@@ -120,15 +130,22 @@ cmd_boot() {
 		local boot="exec >/dev/ttyS0 2>&1; echo ===GUEST-START===;"
 		boot+=" systemctl start systemd-networkd.service systemd-resolved.service;"
 		boot+=" systemctl start network-online.target;"
+		# Same trap as networking, one layer down: pacman-init.service is
+		# WantedBy=multi-user.target, which is never reached, so the live
+		# keyring is never initialised. pacstrap -K then seeds the target from
+		# an empty keyring and the install dies at transaction commit with
+		# "keyring is not writable" / "required key missing from keyring" --
+		# after downloading everything. Cost one full cycle to find.
+		boot+=" systemctl start pacman-init.service;"
 		boot+=" curl -fsS -4 --retry 20 --retry-delay 2 --retry-all-errors"
 		boot+=" -o /root/guest.sh $url && bash /root/guest.sh;"
-		boot+=" echo ===INSTALL-DONE rc=\$?==="
+		boot+=" echo ===GUEST-DONE rc=\$?==="
 		append+=" systemd.run=\"/usr/bin/bash -c '$boot'\""
 		append+=" systemd.run_success_action=none systemd.run_failure_action=none"
 	fi
 	echo "label=$label uuid=$uuid"
 	echo "cmdline: $append"
-	rm -f "$LOG" "$SOCK"
+	rm -f "$LOG" "$SOCK" "$QMP"
 	build_common
 	qemu-system-x86_64 "${qemu_common[@]}" \
 		-drive "if=none,id=cd0,file=$ISO,format=raw,readonly=on" \
@@ -140,7 +157,7 @@ cmd_boot() {
 
 cmd_run() {
 	[ -f "$DISK" ] || die "no disk; run reset+install first"
-	rm -f "$LOG" "$SOCK"
+	rm -f "$LOG" "$SOCK" "$QMP"
 	build_common
 	qemu-system-x86_64 "${qemu_common[@]}" &
 	echo $! >"$PIDF"
@@ -183,6 +200,79 @@ time.sleep(0.5); s.close()
 " "$SOCK" "$*"
 }
 
+# Type a string on the emulated keyboard via QMP. Unlike `send`, this reaches
+# anything reading the console before Linux starts -- GRUB's passphrase prompt
+# above all. Pass --no-enter to leave off the trailing Return (for GRUB's `c`
+# and `e`, which must not be followed by one).
+cmd_key() {
+	local enter=1
+	[ "${1:-}" = "--no-enter" ] && { enter=0; shift; }
+	[ -S "$QMP" ] || die "no qmp socket; is the vm running?"
+	python3 - "$QMP" "$enter" "$*" <<'PY'
+import json, socket, sys, time
+sock, enter, text = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
+# qcode names for the characters a passphrase or a GRUB command line needs.
+SHIFTED = {c: c.lower() for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+SHIFTED.update({'!':'1','@':'2','#':'3','$':'4','%':'5','^':'6','&':'7','*':'8',
+                '(':'9',')':'0','_':'minus','+':'equal','{':'bracket_left',
+                '}':'bracket_right','|':'backslash',':':'semicolon','"':'apostrophe',
+                '<':'comma','>':'dot','?':'slash','~':'grave_accent'})
+PLAIN = {' ':'spc','-':'minus','=':'equal','[':'bracket_left',']':'bracket_right',
+         '\\':'backslash',';':'semicolon',"'":'apostrophe',',':'comma','.':'dot',
+         '/':'slash','`':'grave_accent'}
+for d in range(10):
+    PLAIN[str(d)] = str(d)
+for c in "abcdefghijklmnopqrstuvwxyz":
+    PLAIN[c] = c
+
+s = socket.socket(socket.AF_UNIX); s.connect(sock)
+f = s.makefile("rw")
+f.readline()                                    # greeting
+f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n"); f.flush(); f.readline()
+
+def press(keys):
+    f.write(json.dumps({"execute": "send-key",
+                        "arguments": {"keys": [{"type": "qcode", "data": k} for k in keys]}}) + "\n")
+    f.flush(); f.readline()
+    time.sleep(0.03)
+
+for ch in text:
+    if ch in SHIFTED:
+        press(["shift", SHIFTED[ch]])
+    elif ch in PLAIN:
+        press([PLAIN[ch]])
+    else:
+        raise SystemExit("no qcode mapping for %r" % ch)
+if enter:
+    press(["ret"])
+s.close()
+PY
+}
+
+# Capture the graphical console. GRUB sets no GRUB_TERMINAL_OUTPUT, so its
+# output goes to gfxterm and never reaches the serial port -- the LUKS prompt
+# appears on serial only because it is printed before terminal setup. That makes
+# a failed boot look like a healthy log that simply stops, and any grep for GRUB
+# error text finds nothing. This is the only way to read those errors.
+cmd_shot() {
+	local out="${1:-$VM/screen.png}"
+	[ -S "$QMP" ] || die "no qmp socket; is the vm running?"
+	python3 - "$QMP" "$out" <<'PY'
+import json, socket, sys
+sock, out = sys.argv[1], sys.argv[2]
+s = socket.socket(socket.AF_UNIX); s.connect(sock)
+f = s.makefile("rw")
+f.readline()
+f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n"); f.flush(); f.readline()
+f.write(json.dumps({"execute": "screendump",
+                    "arguments": {"filename": out, "format": "png"}}) + "\n")
+f.flush()
+print(f.readline().strip())
+s.close()
+PY
+	echo "screendump: $out"
+}
+
 cmd_serve() { mkdir -p "$WWW"; exec python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$WWW"; }
 
 cmd_log() { tail -n "${1:-40}" "$LOG"; }
@@ -206,7 +296,9 @@ boot) shift; cmd_boot "$@" ;;
 run) shift; cmd_run "$@" ;;
 wait) shift; cmd_wait "$@" ;;
 send) shift; cmd_send "$@" ;;
+key) shift; cmd_key "$@" ;;
 serve) shift; cmd_serve "$@" ;;
+shot) shift; cmd_shot "$@" ;;
 cycle) shift; cmd_cycle "$@" ;;
 stop) shift; stop; echo "stopped" ;;
 log) shift; cmd_log "$@" ;;
@@ -219,7 +311,9 @@ usage: vmtest.sh <cmd>
   wait [secs]        block for the sentinel; rc = guest rc, 124 timeout, 125 crash
   cycle <sh> [secs]  reset + serve + boot + wait, all in one
   send <text>        type a line into the serial console
+  key [--no-enter] <text>  type on the emulated keyboard via QMP (reaches GRUB)
   serve              foreground http server for $WWW
+  shot [file]        PNG of the graphical console (the only way to read GRUB errors)
   stop | log [n] | info | extract
 USAGE
 exit 1 ;;

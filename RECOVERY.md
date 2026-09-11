@@ -9,8 +9,20 @@ linux 7.2.4-arch1-2. Four failure modes were induced, each confirmed
 **not to boot** (or to boot **wrong**), then recovered. Nothing here is
 paper-only; anything not executed is marked **UNTESTED**.
 
+> [!WARNING]
+> **Re-verification pending for the three-partition layout.** Every procedure
+> below was executed against the two-partition layout that predates the
+> hibernation swap. The addition of `/dev/vda3`, a second keyfile, and `resume=`
+> on the kernel command line changes the environment each recovery runs in, and
+> those runs have **not** been redone yet. `test/TESTPLAN.md` §Tier 3 tracks
+> which scenarios still need re-proving and what specifically changes in each.
+> Two are known to need edits rather than just a re-run: §4 must restore *both*
+> keyfiles, and §5 must reproduce `resume=` and `zswap.enabled=1` rather than
+> only the root line. Treat the rest as sound in outline and unconfirmed in
+> detail until that work lands.
+
 Replace `vmtestluks` with your passphrase and `/dev/vda` with your disk
-(`/dev/nvme0n1` → partitions are `p1`/`p2`).
+(`/dev/nvme0n1` → partitions are `p1`/`p2`/`p3`).
 
 ---
 
@@ -19,7 +31,35 @@ Replace `vmtestluks` with your passphrase and `/dev/vda` with your disk
 ```
 /dev/vda1  ESP, vfat, mounted at /efi          <- GRUB core image + stamp file
 /dev/vda2  LUKS2 -> /dev/mapper/root, btrfs
+/dev/vda3  LUKS2 -> /dev/mapper/swap, raw swap <- hibernation image lives here
 ```
+
+**Three partitions, not two.** `vda3` is a second, independently-keyed LUKS2
+container holding swap sized for a hibernation image. Four things follow that
+matter during a recovery:
+
+* **It does not stop the machine booting, but it does delay it.** A damaged or
+  missing swap container gives you a machine with no swap and no hibernate,
+  which still boots — degraded, not dead. Do not let it distract you from a
+  root-filesystem problem. But expect the boot to be slow and to *look* hung:
+  `resume=` makes `systemd-hibernate-resume.service` depend on the swap device
+  from inside the initramfs, ordered before the root filesystem is mounted, so
+  a device that never appears is waited on with `A start job is running for
+  /dev/mapper/swap` on screen. `resumeflags=x-systemd.device-timeout=10s` on
+  the kernel command line bounds that wait, and `nofail` on the fstab entry
+  bounds the second, host-side one. If a rescued machine boots slowly with that
+  message, the swap container is the cause — not the root filesystem.
+* **It has its own keyfile**, `/etc/cryptsetup-keys.d/swap.key`, which lives
+  *inside the root filesystem*. So restoring a destroyed initramfs means
+  restoring **both** keyfiles; miss the swap one and hibernation silently stops
+  working while everything else looks fine.
+* **The passphrase opens it too.** The keyfile is slot 0 and the passphrase is
+  slot 1, so from the ISO `cryptsetup open /dev/vda3 swap` prompts and works
+  exactly like the root container. You do not need the keyfile to rescue it.
+* **Never run `mkswap` on it while an image is live.** That is the difference
+  between "resume restored my session" and "the machine booted fresh and the
+  session is gone". The same hazard is why `crypttab.initramfs` must not carry
+  the `swap` option — see the comment there.
 
 Inside the btrfs, from subvolid 5:
 
@@ -56,7 +96,7 @@ snapshot**, so they are themselves subject to rollback — see the finding in §
 
 | What you see | What it means | Go to |
 |---|---|---|
-| GRUB asks for the passphrase, then `error: file '/@/.snapshots/N/snapshot/boot/grub/x86_64-efi/normal.mod' not found.` → `grub rescue>` | GRUB's embedded prefix names a subvolume that no longer exists | §3 |
+| GRUB asks for the passphrase, **accepts it**, then `error: file '/@/.snapshots/N/snapshot/boot/grub/x86_64-efi/normal.mod' not found.` → `grub rescue>` | GRUB's embedded prefix names a subvolume that no longer exists | §3 |
 | `grub>` prompt with no menu | `grub.cfg` is unreadable/corrupt; GRUB itself is fine | §5 |
 | GRUB menu appears, `error: ... invalid magic number` when booting | kernel image inside the root snapshot is damaged | §4 |
 | Menu boots, then `Failed to start Switch Root.` / `You are in emergency mode` / `Cannot open access to console, the root account is locked` | kernel and initramfs are fine; the **default subvolume** does not contain a root filesystem | §2 |
@@ -203,6 +243,17 @@ cat /efi/EFI/GRUB/root-subvol           # @/.snapshots/19/snapshot
 ---
 
 ## 3. Rollback leaves GRUB anchored to a deleted snapshot — REPRODUCED, RECOVERED
+
+> [!IMPORTANT]
+> **Your passphrase is fine. Do not go looking at the LUKS header.**
+> `core.img` carries the cryptodisk modules, so GRUB unlocks the disk *before*
+> it needs anything from the prefix. You will see the passphrase prompt, you
+> will see `Slot "0" opened`, and only then does it fail to load `normal.mod`
+> from a subvolume that no longer exists. Watching a correct passphrase be
+> accepted and still landing in `grub rescue>` invites exactly the wrong
+> diagnosis — that the passphrase, the keyslot or the header is damaged. It is
+> none of those. Confirmed in a VM: the unlock succeeds every time and the
+> failure is purely about the missing prefix path.
 
 ### Break
 
@@ -510,6 +561,23 @@ grep -m1 -E '^[[:space:]]+linux' /mnt/boot/grub/grub.cfg
 #   linux /@/.snapshots/19/snapshot/boot/vmlinuz-linux root=/dev/mapper/root rw ...
 grep -c 'rootflags=subvol=' /mnt/boot/grub/grub.cfg
 #   0                                <- grub-sync stripped it; must be 0
+
+# A config that boots is not the same as a config that is COMPLETE. These three
+# are what a regenerated grub.cfg silently loses without any visible symptom:
+# the machine comes up perfectly and simply cannot hibernate any more, and
+# nobody connects that to a grub.cfg repair done weeks earlier.
+grep -c 'resume=/dev/mapper/swap' /mnt/boot/grub/grub.cfg
+#   3                                <- default entry + both submenu entries
+grep -c 'zswap.enabled=1' /mnt/boot/grub/grub.cfg
+#   3
+grep -c cryptomount /mnt/boot/grub/grub.cfg
+#   4                                <- preamble + one per entry
+
+# And prove /boot really is the one INSIDE the root subvolume, not a stray
+# mount. This layout has no separate /boot; getting it wrong means repairing
+# somebody else's kernel directory and reporting success.
+findmnt -no SOURCE -T /mnt/boot/grub
+#   /dev/mapper/root[/@/.snapshots/19/snapshot]
 ```
 
 **Verified:** boots.

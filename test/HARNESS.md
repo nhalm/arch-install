@@ -47,7 +47,7 @@ systemd.run="/usr/bin/bash -c 'exec >/dev/ttyS0 2>&1; echo ===GUEST-START===;
 systemd.run_success_action=none systemd.run_failure_action=none
 ```
 
-Two things that are load-bearing:
+Three things that are load-bearing:
 
 - **The unit must start networking itself.** `systemd.run=` units are ordered
   only after `basic.target`, and the generator's unit becomes the effective
@@ -55,6 +55,27 @@ Two things that are load-bearing:
   starts on its own. Without the explicit `systemctl start`, curl fails with
   `(7) Failed to connect to 10.0.2.2 after 0 ms` for the whole retry window and
   the guest never gets a login prompt either. This cost two failed runs.
+- **The unit must start `pacman-init.service` too** — the same trap one layer
+  down, worth stating separately because the symptom points somewhere else
+  entirely. `pacman-init.service` is `WantedBy=multi-user.target`, so on this
+  boot path the live keyring is never initialised: `pacman-key --init` has not
+  run, `/etc/pacman.d/gnupg` holds no keys, and `pacstrap -K` seeds the target
+  keyring from that empty one. The install downloads all ~800 MiB and then dies
+  at transaction commit with:
+
+  ```
+  warning: Public keyring not found; have you run 'pacman-key --init'?
+  error: keyring is not writable          (x23)
+  error: required key missing from keyring
+  ==> ERROR: Failed to install packages to new root
+  ```
+
+  Nothing in that output mentions `multi-user.target`, and it reads convincingly
+  like an ISO too old for the current signing keys — which is the wrong tree to
+  bark up. It is neither the ISO's age nor the installer. Confirmed by running
+  `pacman-key --init` by hand on a booted ISO: it exits 0 and populates a
+  directory that was empty, i.e. nothing had run it. This cost one full cycle
+  plus a wrong "fix" in `arch-install.sh` that had to be reverted.
 - **No single quotes in the command.** The value is single-quoted inside a
   double-quoted kernel argument; the kernel keeps it as one parameter and
   systemd unquotes it once.
@@ -64,7 +85,11 @@ serial console stays usable for poking around.
 
 ## Finish detection
 
-The guest bootstrap always ends with `===INSTALL-DONE rc=N===` on `/dev/ttyS0`.
+The guest bootstrap always ends with `===GUEST-DONE rc=N===` on `/dev/ttyS0`.
+Deliberately *not* `===INSTALL-DONE===`: `arch-install.sh` prints that itself
+when the install finishes, so sharing the string would kill the VM out from
+under any guest script that does further work afterwards -- re-verifying,
+enabling a serial console, running a self-test. Cost one cycle to notice.
 `vmtest.sh wait [secs]` polls `serial.log` for that and then kills qemu:
 
 - sentinel found → exits with the guest's `N`
@@ -151,3 +176,22 @@ disconnects, so `send` writes a byte at a time and lingers 0.5s before closing.
 - A stale `python3 -m http.server` on the same port will answer a naive
   readiness probe while serving the wrong directory. `serve_bg` writes a nonce
   file and checks it comes back, and dies if the bind failed.
+
+## Writing break/rescue scripts: two traps
+
+**Never let a check match text your own script printed.** Break scripts announce
+what they expect (`echo "expect grub rescue>"`), so any check scanning the
+serial log for a failure string can match the prediction instead of the failure.
+That is a self-confirming false positive: the scenario proves its break worked
+by reading its own console echo, silently and convincingly. Anchor failure
+patterns at line start (`^grub rescue>`) — real prompts are always at line
+start, predictions are mid-sentence — or record a byte offset after `vmtest.sh
+run` and match with `tail -c +$off`, the way `drive-runtime.sh`'s
+`wait_for_after()` already does. Measured against real phase logs: unanchored
+matched the break script's own echo; anchored matched only the genuine prompts.
+
+**`vmtest.sh send` garbles long command lines in the console echo** while
+executing them correctly. It is a display artefact of byte-at-a-time writing, not
+a delivery failure. The practical constraint: never parse the echoed command
+text, only marker-framed output the guest itself produces
+(`=====THING=====` … `=====THING-END=====`).
