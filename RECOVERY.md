@@ -692,6 +692,39 @@ cures the symptom and leaves you booting the wrong snapshot. Pass the target.
 
 ---
 
+## 6a. Before rolling back from outside the running system
+
+> [!IMPORTANT]
+> **If the machine was hibernated, disarm the image before you roll back.**
+>
+> A hibernation image is a dump of RAM including the kernel's cached view of the
+> filesystem. Rolling back moves that filesystem. If a later boot then resumes
+> the image, the restored kernel writes back metadata describing a tree that no
+> longer exists. The kernel's own documentation is blunt about the general case:
+> *"If you touch anything on disk between suspend and resume … kiss your data
+> goodbye."*
+>
+> From the ISO, before changing the default subvolume:
+>
+> ```sh
+> cryptsetup open /dev/vda3 swap          # passphrase is slot 1
+> swapon /dev/mapper/swap && swapoff /dev/mapper/swap
+> cryptsetup close swap
+> ```
+>
+> `swapon` is the correct, supported way to disarm: when it finds an `S1SUSPEND`
+> signature it rewrites ten bytes back to `SWAPSPACE2` and touches nothing else.
+> `mkswap` also works but rewrites the whole header and changes the UUID, which
+> breaks `crypttab.initramfs`. Do not use it.
+>
+> If `swapon` reports no swap signature, there was no image and you have lost
+> nothing.
+>
+> Two things you do **not** need to worry about, both confirmed in the kernel
+> source: a resume that is *attempted* and fails still disarms the image
+> (`swsusp_check()` restores the original signature before reading anything),
+> and hybrid-sleep never leaves an armed image on a running system.
+
 ## 7. Finishing up
 
 Re-arm the safety nets if a rescue or a rollback left them off:

@@ -770,6 +770,14 @@ write_fstab() {
   #
   # The serial log shows 2 and 3 as the same device with two different budgets
   # ("(9s / 30s)" and "(9s / 1min 30s)"), which is what gave the third one away.
+  #
+  # The trade these bounds make, recorded deliberately: a swap container that
+  # misses the budget is now non-fatal, and therefore also non-INVALIDATING.
+  # Resume is skipped and swapon never runs, so a hibernation image stays armed
+  # while the filesystem carries on changing. A 196 s stall indistinguishable
+  # from a hang was the worse failure, so the trade is right -- but it is why
+  # verify asserts swap is active, and why RECOVERY.md §6a tells you to disarm
+  # the image by hand before rolling back from outside the running system.
   # Note resumeflags= inherits rootflags= when unset, and grub-sync strips
   # rootflags=subvol= entirely, so nothing is inherited and it must be explicit.
   #
@@ -1177,8 +1185,13 @@ verify() {
     checkv "running kernel has no root pin on its cmdline" "0" "$got"
     checkv "zswap compressor" "zstd" "$(cat /sys/module/zswap/parameters/compressor 2>/dev/null || true)"
     check "no zram block device" test ! -e /sys/block/zram0
+    # Swap being ACTIVE is what disarms a stale hibernation image: swapon
+    # rewrites the S1SUSPEND signature back to SWAPSPACE2 when it finds one. A
+    # machine running without swap has, by definition, not done that -- and
+    # nofail plus the device timeouts mean it can now boot that way silently.
+    # So "swap is active" is a hibernation-safety invariant, not just tidiness.
     got=$(swapon --noheadings --show=NAME 2>/dev/null | wc -l)
-    checkv "exactly one swap area" "1" "$got"
+    checkv "swap is active (disarms any stale hibernation image)" "1" "$got"
     # swapon reports the resolved device (/dev/dm-0), not the mapper symlink,
     # so both sides have to be resolved or this can never match.
     got=$(readlink -f "$(swapon --noheadings --show=NAME 2>/dev/null | head -1)" 2>/dev/null || true)

@@ -161,32 +161,51 @@ genuinely fails, recover it, then `verify`.
 | 3.6 | **new** — swap container header damaged | **pass, after a fix.** Boots with root intact, swap absent, `/sys/power/resume` `0:0`. But without `nofail` it first stalls the full 90 s device timeout — 196 s to a login prompt, looking exactly like a hang. `nofail` added to the fstab swap entry, with an invariant. | **pass** |
 | 3.7 | **new** — hibernate, then roll back, then resume | See below. | not run |
 
-### 3.7 is the genuinely new hazard
+### 3.7: researched instead of tested, and the answer is a paragraph
 
-A hibernation image is a snapshot of RAM, including the kernel's idea of what is
-on disk. `snapper rollback` moves the filesystem underneath it. Resuming a stale
-image onto a rolled-back filesystem means the kernel's cached metadata describes
-a subvolume that is no longer the root — dirty pages written back over a tree
-that has changed.
+Not run — it needs a working resume to arm it. But it was researched, and the
+conclusion is that the plugin this section originally proposed should **not** be
+built.
 
-Sequence to test:
+**The hazard class is old and upstream is blunt about it.** The kernel's
+hibernation docs: *"If you touch anything on disk between suspend and resume …
+kiss your data goodbye."* `power_down()` spins forever rather than let a machine
+keep running with an armed image. An LKML thread from 2008 asked for exactly
+this invalidation and the answer was "mkswap the partition from a boot script,
+after checking whether to resume". The rollback-shaped instance appears to be
+undocumented anywhere — openSUSE ships snapper rollback *and* hibernation and
+says nothing about the interaction — but it is an instance, not a new class.
 
-1. Hibernate with a known file present.
-2. Boot the ISO instead of resuming; roll the default subvolume back to a
-   snapshot taken *before* that file existed.
-3. Boot normally. The kernel finds an unconsumed image in swap and resumes it.
-4. Observe what happens to the filesystem.
+**Why no plugin.** A `rollback-post` snapper plugin leaks on exactly the side
+that matters: in the ISO-rollback sequence this section describes, the plugin
+cannot run at all. And on a live system with swap active there is provably no
+image to invalidate, because `swapon` already cleared it. It would buy the
+intersection of two unlikely conditions, and add a third instance of the
+"safety net lives inside the snapshot" pattern RECOVERY.md §8 already warns
+about.
 
-Expected: corruption, or at best confusion. **If it does corrupt**, the fix is
-the image guard from the hibernate report — a unit that refuses to resume an
-image whose header does not match the current root, or that invalidates the
-image whenever `snapper rollback` runs. That would be a new `rollback-post`
-plugin alongside `10-grub`.
+**What was done instead:**
 
-This interaction does not exist on a machine without rollback, so there is no
-upstream guidance for it. It has to be established here.
+* RECOVERY.md §6a — disarm the image by hand before rolling back from outside
+  the running system. `swapon` then `swapoff` is the correct supported
+  mechanism: it rewrites ten bytes of signature and touches nothing else.
+  `mkswap` changes the UUID and would break `crypttab.initramfs`.
+* `verify` asserts swap is **active**, reframed as a hibernation-safety
+  invariant rather than tidiness — an inactive swap has not disarmed anything.
 
----
+**And a trade worth knowing about, created by the 3.6 fixes.** `nofail` plus the
+device timeouts make a missing swap container non-fatal, and therefore also
+non-invalidating: resume is skipped, `swapon` never runs, and an image stays
+armed while the filesystem changes. That is a likelier route into this hazard
+than a deliberate rollback, and systemd#32021 shows the precondition (LUKS2
+swap, device timeout) happening to real people. The trade is still correct — a
+196 s stall indistinguishable from a hang is worse — but it is recorded in
+`write_fstab()`'s comment rather than left implicit.
+
+**Two non-problems, confirmed in kernel source, so nobody re-derives them:** a
+resume that is attempted and fails still disarms the image, because
+`swsusp_check()` restores the original signature before reading anything; and
+hybrid-sleep never leaves an armed image on a running system.
 
 ## Running Tier 2
 
