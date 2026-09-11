@@ -62,7 +62,30 @@ a resume and cannot survive a reboot — which is what stops a failed resume fro
 being mistaken for a successful one, since a machine that fails to resume simply
 boots and looks healthy.
 
-**Status: entry PROVEN, resume PARTIAL, post-resume stability FAILS in this VM.**
+**Status: entry PROVEN, resume PARTIAL, post-resume stability FAILS in this VM.
+The automated test could not have reported any of this — see the correction
+below.**
+
+> [!WARNING]
+> **The 2.7 automation was broken in three ways, found by audit, not by running
+> it.** Every hibernate run timing out at 124 was a harness bug, not a system
+> result: `drive-runtime.sh` waited for `===HIBERNATE-TEST-DONE rc=N===`, which
+> no script emits — `hibernate-test.sh` prints `===HIBERNATE-TEST rc=N===` with
+> no `-DONE`. The wait could never match. The driver also never read the `rc=`
+> digit, so once the name was fixed a *failing* run would have read as a
+> finished one. And `--resumed` waited for the shell prompt, which is text that
+> flushes from *before* the freeze, so it proved a resume happened but not that
+> a shell was ready for the command it then typed.
+>
+> Worse, `phase2` could not fail for the reason it claimed. `boot_id` unchanged,
+> the `/dev/shm` marker present and `uname -r` unchanged are *all equally true
+> of a machine that never slept*. They rule out a fresh boot being mistaken for
+> a resume — the inverse, and rarer, failure. `phase2` now asks the kernel for
+> evidence of a hibernation cycle in `dmesg` before trusting anything else.
+>
+> The findings below therefore rest on manual observation — qemu exiting, log
+> sizes, buffered output flushing — and not on this test, which was incapable of
+> producing them.
 
 Established, with journal evidence from the guest:
 

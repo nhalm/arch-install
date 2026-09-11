@@ -66,9 +66,15 @@ if [ "$RESUMED" = 1 ]; then
   # A resumed machine returns to the session that was running when it froze, so
   # the proof of resume is the shell prompt coming back with no login in
   # between. Wait for that instead.
-  say "waiting for the restored shell prompt (no login: on a resumed machine)"
+  # NOT the shell prompt: output buffered before the freeze flushes on the far
+  # side of the resume, and `[nick@archvm ~]$` is exactly that kind of text. It
+  # proves a resume happened but not that a shell is ready for input -- and the
+  # next line immediately types into it. Wait for something that cannot exist
+  # until after the thaw: the kernel's own resume line in dmesg, echoed to the
+  # console by a marker the guest prints fresh.
+  say "waiting for evidence of a completed thaw (not pre-freeze buffered text)"
   start=$(date +%s)
-  until grep -aq "@${HOSTNAME_EXPECT:-archvm}" "$LOG" 2>/dev/null; do
+  until grep -aqE 'PM: hibernation exit|Restarting tasks \.\.\. done' "$LOG" 2>/dev/null; do
     if [ $(( $(date +%s) - start )) -ge "$LIMIT" ]; then
       echo "timeout waiting for a restored shell" >&2
       tail -30 "$LOG" | tr -d '\r' >&2
@@ -124,7 +130,13 @@ fi
 
 say "running $SCRIPT in the guest"
 start=$(date +%s)
-until grep -aqE '===(RUNTIME|HIBERNATE-TEST|ROLLBACK-TEST|GUEST)-DONE rc=[0-9]+===' "$LOG" 2>/dev/null; do
+# The scripts emit ===HIBERNATE-TEST rc=N=== and ===ROLLBACK-TEST rc=N===, with
+# no -DONE; only RUNTIME-DONE and GUEST-DONE carry it. The old pattern demanded
+# -DONE from all four, so the two alternatives naming those scripts could never
+# match and every hibernate and rollback run timed out at 124 regardless of its
+# result -- which cost hours of diagnosing the system for a harness bug.
+SENT='===(RUNTIME-DONE|GUEST-DONE|HIBERNATE-TEST|ROLLBACK-TEST) rc=([0-9]+)==='
+until grep -aqE "$SENT" "$LOG" 2>/dev/null; do
   if ! kill -0 "$(cat "${VM:-$HERE}/vm.pid" 2>/dev/null || echo 0)" 2>/dev/null; then
     say "qemu exited (expected if the guest hibernated or powered off)"
     exit 0
@@ -135,4 +147,9 @@ until grep -aqE '===(RUNTIME|HIBERNATE-TEST|ROLLBACK-TEST|GUEST)-DONE rc=[0-9]+=
   fi
   sleep 3
 done
+# Read the exit code. The pattern accepts rc=[0-9]+, so without this a FAILING
+# run reads as a finished one -- rc=0 is the string that means passed.
+rc=$(grep -aoE "$SENT" "$LOG" | tail -1 | sed -E 's/.* rc=([0-9]+)===/\1/')
 sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$LOG" | tail -60
+say "guest sentinel rc=${rc:-unknown}"
+[ "${rc:-1}" = 0 ]

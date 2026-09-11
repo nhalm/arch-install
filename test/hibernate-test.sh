@@ -4,11 +4,17 @@
 #
 #   phase1  -> machine powers off -> boot it again -> phase2
 #
-# The proof is /dev/shm: tmpfs lives in RAM only. It survives hibernate (the
-# image includes it) and cannot survive a reboot. Combined with boot_id, which
-# is regenerated on a fresh boot but not on resume, a fresh boot cannot be
-# mistaken for a successful resume -- which is the failure this test exists to
-# catch, because a machine that fails to resume just... starts, and looks fine.
+# Two different failures, and they need different evidence:
+#
+#   "it booted fresh instead of resuming" -- caught by /dev/shm (tmpfs is
+#   RAM-only, survives a resume, cannot survive a reboot) plus boot_id, which is
+#   regenerated on a fresh boot but not on a resume.
+#
+#   "it never slept at all" -- NOT caught by either of those, because both are
+#   equally true of a machine that simply kept running. This is the likelier
+#   failure: a missing resume target and a refused freeze both look like nothing
+#   happening. phase2 therefore asks the kernel for evidence of a hibernation
+#   cycle in dmesg before it checks anything else.
 set -euo pipefail
 
 STATE=/var/log/hibernate-test.state
@@ -66,6 +72,11 @@ EOF
   (( elapsed > 60 )) ||
     die "still running ${elapsed}s after requesting hibernate -- entry failed"
   msg "resumed after ${elapsed}s of wall time -- the machine hibernated and came back"
+  # Running phase2 here is a convenience, not the proof: every value it compares
+  # was planted by this same process a minute ago and never left RAM. The wall
+  # clock above is one heuristic and cannot tell "powered off for 40 s" from
+  # "hibernate took 70 s to fail on a contended host". phase2's own dmesg check
+  # is what makes this meaningful -- it asks the kernel, not the test.
   phase2
 }
 
@@ -74,6 +85,21 @@ phase2() {
   # shellcheck source=/dev/null
   . "$STATE"
   preflight
+
+  # FIRST: prove the machine actually slept. Everything below this point --
+  # boot_id unchanged, the tmpfs marker present, uname -r unchanged -- is
+  # equally true of a machine that NEVER SLEPT AT ALL. Those assertions rule out
+  # a fresh boot being mistaken for a resume; they do nothing about the likelier
+  # failure, which is "hibernate silently did nothing" (a missing resume target
+  # and a refused freeze both produce exactly that). Only the kernel can emit
+  # these lines, and only on the far side of a real hibernation cycle.
+  local resumed
+  resumed=$(dmesg 2>/dev/null |
+            grep -acE 'PM: hibernation exit|PM: Image loading progress|Restarting tasks \.\.\. done' || true)
+  (( resumed > 0 )) ||
+    die "no kernel evidence of a hibernation cycle in dmesg -- this machine may never have slept.
+    boot_id and the tmpfs marker cannot distinguish that from a resume, so they are not checked."
+  msg "kernel confirms a hibernation cycle ($resumed matching dmesg lines)"
 
   local now; now=$(cat /proc/sys/kernel/random/boot_id)
   msg "boot_id then: $BOOTID"
